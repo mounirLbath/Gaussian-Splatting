@@ -1,4 +1,5 @@
 #include "helper.hpp" 
+#include "cgp/cgp.hpp"
 
 #include <iostream>
 #include <sstream>
@@ -7,8 +8,11 @@
 #include <cstring>
 #include <fstream>
 
-void read_points_from_ply_file(const std::string &filepath, std::vector<vec3>& points)
+void read_points_from_ply_file(const std::string &filepath, cgp::numarray<vec3>& points, const float percentage)
 {
+
+
+
     std::ifstream file(filepath, std::ios::binary);
     if (!file.is_open()) {
         std::cerr << "Cannot open file: " << filepath << std::endl;
@@ -88,12 +92,9 @@ void read_points_from_ply_file(const std::string &filepath, std::vector<vec3>& p
 		std::memcpy(&y, ptr + properties["y"].offset, 4);
 		std::memcpy(&z, ptr + properties["z"].offset, 4);
 
-		points.emplace_back(x, y, z);
+		if(percentage > 0.99f || static_cast<float>(rand()) / RAND_MAX <= percentage)
+			points.push_back({x, y, z});
 
 		ptr += vertexSize;
 	}
-
-	for(int i = 0; i < 10; i++)
-		std::cout << points[i] << std::endl;
-
 }

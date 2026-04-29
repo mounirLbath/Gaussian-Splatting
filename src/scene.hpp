@@ -65,7 +65,7 @@ struct scene_structure : cgp::scene_inputs_generic {
 
 	mesh_drawable quad1;
 
-	std::vector<vec3> points;
+	numarray<vec3> points;
 
 
 	// ****************************** //

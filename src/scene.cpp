@@ -44,11 +44,13 @@ void scene_structure::initialize()
 	mesh quad_mesh = mesh_primitive_quadrangle({ -delta,0,-delta }, { delta,0,-delta }, { delta,0,delta }, { -delta,0,delta });
 
 
-	read_points_from_ply_file("./assets/nike/scene.ply", points);
+	read_points_from_ply_file("./assets/nike/scene.ply", points, 0.1);
 
 	quad1.initialize_data_on_gpu(quad_mesh);
-	quad1.shader.load(project::path + "shaders/single_color/single_color.vert.glsl", project::path + "shaders/single_color/single_color.frag.glsl");
+	quad1.shader.load(project::path + "shaders/instancing/instancing.vert.glsl", project::path + "shaders/instancing/instancing.frag.glsl");
 	
+	quad1.initialize_supplementary_data_on_gpu(points, /*location*/ 4, /*divisor: 1=per instance, 0=per vertex*/ 1);
+
 	std::cout << "End function scene_structure::initialize()" << std::endl;
 }
 
@@ -78,18 +80,20 @@ void scene_structure::display_frame()
 	vec3 const right = camera.right();
 	vec3 const up = camera.up();
 	// Rotation such that the grass follows the right-vector of the camera, while pointing toward the z-direction
-	rotation_transform R = rotation_transform::from_frame_transform({ 1,0,0 }, { 0,0,1 }, right, up);
-	quad1.model.rotation = R;
+	//rotation_transform R = rotation_transform::from_frame_transform({ 1,0,0 }, { 0,0,1 }, right, up);
+	//quad1.model.rotation = R;
 
 	//draw point cloud
-	for(int i = 0; i < points.size(); i++)
-	{
-		if(i%500 ==0 )
-		{
-			quad1.model.translation = 10*points[i];
-			draw(quad1, environment);
-		}
-	}
+	// for(int i = 0; i < points.size(); i++)
+	// {
+	// 	if(i%50 ==0 )
+	// 	{
+	// 		quad1.model.translation = 10*points[i];
+	// 		draw(quad1, environment);
+	// 	}
+	// }
+
+	draw(quad1, environment, points.size());
 
 	if (gui.display_wireframe) {
 		//draw_wireframe(terrain, environment);
