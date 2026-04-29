@@ -1,4 +1,5 @@
 #include "scene.hpp"
+#include "helper.hpp"
 
 
 using namespace cgp;
@@ -39,6 +40,14 @@ void scene_structure::initialize()
 
 	gui.display_frame = true;
 
+	float delta = 0.01;
+	mesh quad_mesh = mesh_primitive_quadrangle({ -delta,0,-delta }, { delta,0,-delta }, { delta,0,delta }, { -delta,0,delta });
+
+
+	read_points_from_ply_file("./assets/nike/scene.ply", points);
+
+	quad1.initialize_data_on_gpu(quad_mesh);
+	quad1.shader.load(project::path + "shaders/single_color/single_color.vert.glsl", project::path + "shaders/single_color/single_color.frag.glsl");
 	
 	std::cout << "End function scene_structure::initialize()" << std::endl;
 }
@@ -64,15 +73,23 @@ void scene_structure::display_frame()
 	// Update time
 	timer.update();
 
+	auto const& camera = camera_control.camera_model;
+	// Re-orient the grass shape to always face the camera direction
+	vec3 const right = camera.right();
+	vec3 const up = camera.up();
+	// Rotation such that the grass follows the right-vector of the camera, while pointing toward the z-direction
+	rotation_transform R = rotation_transform::from_frame_transform({ 1,0,0 }, { 0,0,1 }, right, up);
+	quad1.model.rotation = R;
 
-
-	// Draw all the shapes
-	//draw(terrain, environment);
-
-	// Animate the second cube in the water
-	//cube2.model.translation = { -1.0f, 6.0f+0.1*sin(0.5f*timer.t), -0.8f + 0.1f * cos(0.5f * timer.t)};
-	// cube2.model.rotation = rotation_transform::from_axis_angle({1,-0.2,0},Pi/12.0f*sin(0.5f*timer.t));
-	// draw(cube2, environment);
+	//draw point cloud
+	for(int i = 0; i < points.size(); i++)
+	{
+		if(i%500 ==0 )
+		{
+			quad1.model.translation = 10*points[i];
+			draw(quad1, environment);
+		}
+	}
 
 	if (gui.display_wireframe) {
 		//draw_wireframe(terrain, environment);

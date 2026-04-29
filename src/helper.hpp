@@ -14,4 +14,4 @@ struct Property {
 
 
 // read point coordinates of cloud from ply file
-std::vector<cgp::vec3> read_points_from_ply_file(const std::string &filepath);
+void read_points_from_ply_file(const std::string &filepath, std::vector<vec3> &points);

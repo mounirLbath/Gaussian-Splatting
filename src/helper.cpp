@@ -7,12 +7,12 @@
 #include <cstring>
 #include <fstream>
 
-std::vector<vec3> read_points_from_ply_file(const std::string &filepath)
+void read_points_from_ply_file(const std::string &filepath, std::vector<vec3>& points)
 {
     std::ifstream file(filepath, std::ios::binary);
     if (!file.is_open()) {
         std::cerr << "Cannot open file: " << filepath << std::endl;
-        return {};
+        return;
     }
 
 	std::string line;
@@ -75,14 +75,12 @@ std::vector<vec3> read_points_from_ply_file(const std::string &filepath)
 
 	uint8_t* ptr = buffer.data(); 
 
-	std::vector<vec3> points;
-
 	for(int i = 0; i < nbVertex; i++)
 	{
 		if(properties["x"].type != "float" || properties["y"].type != "float" || properties["z"].type != "float")
 		{
 			std::cerr << "x,y and z should be of type float in " << filepath << std::endl;
-        	return {};
+        	return;
 		}
 		float x, y, z;
 
@@ -98,5 +96,4 @@ std::vector<vec3> read_points_from_ply_file(const std::string &filepath)
 	for(int i = 0; i < 10; i++)
 		std::cout << points[i] << std::endl;
 
-	return points;
 }
