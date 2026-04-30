@@ -8,7 +8,7 @@
 #include <cstring>
 #include <fstream>
 
-void read_points_from_ply_file(const std::string &filepath, cgp::numarray<vec3>& points, const float percentage)
+void read_points_from_ply_file(const std::string &filepath, cgp::numarray<vec3>& points, cgp::numarray<vec3>& colors, const float percentage)
 {
 
 
@@ -87,13 +87,20 @@ void read_points_from_ply_file(const std::string &filepath, cgp::numarray<vec3>&
         	return;
 		}
 		float x, y, z;
+		float r, g, b;
 
 		std::memcpy(&x, ptr + properties["x"].offset, 4);
 		std::memcpy(&y, ptr + properties["y"].offset, 4);
 		std::memcpy(&z, ptr + properties["z"].offset, 4);
+		std::memcpy(&r, ptr + properties["f_dc_0"].offset, 4);
+		std::memcpy(&g, ptr + properties["f_dc_1"].offset, 4);
+		std::memcpy(&b, ptr + properties["f_dc_2"].offset, 4);
 
 		if(percentage > 0.99f || static_cast<float>(rand()) / RAND_MAX <= percentage)
+		{
 			points.push_back({x, y, z});
+			colors.push_back({r, g, b});
+		}
 
 		ptr += vertexSize;
 	}

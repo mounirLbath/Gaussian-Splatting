@@ -48,12 +48,13 @@ void scene_structure::initialize()
 		{ -delta, delta,0 }
 	);
 
-	read_points_from_ply_file("./assets/nike/scene.ply", points, 0.1);
+	read_points_from_ply_file("./assets/nike/scene.ply", points, colors, 0.1);
 
 	quad1.initialize_data_on_gpu(quad_mesh);
 	quad1.shader.load(project::path + "shaders/instancing/instancing.vert.glsl", project::path + "shaders/instancing/instancing.frag.glsl");
 	
 	quad1.initialize_supplementary_data_on_gpu(points, /*location*/ 4, /*divisor: 1=per instance, 0=per vertex*/ 1);
+	quad1.initialize_supplementary_data_on_gpu(colors, /*location*/ 5, /*divisor: 1=per instance, 0=per vertex*/ 1);
 
 	std::cout << "End function scene_structure::initialize()" << std::endl;
 }
