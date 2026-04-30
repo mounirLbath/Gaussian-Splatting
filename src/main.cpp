@@ -14,6 +14,7 @@
 int main(int, char* argv[])
 {
 
+	
 	scene_structure scene;
 	application_structure app;
 	app.initialize(argv[0], &scene);

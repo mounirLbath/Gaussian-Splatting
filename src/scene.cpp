@@ -41,8 +41,12 @@ void scene_structure::initialize()
 	gui.display_frame = true;
 
 	float delta = 0.01;
-	mesh quad_mesh = mesh_primitive_quadrangle({ -delta,0,-delta }, { delta,0,-delta }, { delta,0,delta }, { -delta,0,delta });
-
+	mesh quad_mesh = mesh_primitive_quadrangle(
+		{ -delta,-delta,0 },
+		{  delta,-delta,0 },
+		{  delta, delta,0 },
+		{ -delta, delta,0 }
+	);
 
 	read_points_from_ply_file("./assets/nike/scene.ply", points, 0.1);
 
@@ -75,23 +79,7 @@ void scene_structure::display_frame()
 	// Update time
 	timer.update();
 
-	auto const& camera = camera_control.camera_model;
-	// Re-orient the grass shape to always face the camera direction
-	vec3 const right = camera.right();
-	vec3 const up = camera.up();
-	// Rotation such that the grass follows the right-vector of the camera, while pointing toward the z-direction
-	//rotation_transform R = rotation_transform::from_frame_transform({ 1,0,0 }, { 0,0,1 }, right, up);
-	//quad1.model.rotation = R;
-
-	//draw point cloud
-	// for(int i = 0; i < points.size(); i++)
-	// {
-	// 	if(i%50 ==0 )
-	// 	{
-	// 		quad1.model.translation = 10*points[i];
-	// 		draw(quad1, environment);
-	// 	}
-	// }
+	quad1.model.rotation = rotation_transform::from_axis_angle({0,0,1}, timer.t * 0.5f);
 
 	draw(quad1, environment, points.size());
 

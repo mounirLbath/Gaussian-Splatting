@@ -11,5 +11,18 @@ flat out int instanceID;
 
 void main()
 {
-	gl_Position = projection * view * model * vec4(position + 10*instance_position, 1.0);
+	mat3 R = transpose(mat3(view));
+
+	vec3 camera_right = R[0];
+	vec3 camera_up    = R[1];
+
+	vec3 center = (model * vec4(10.0 * instance_position, 1.0)).xyz;
+
+    vec3 world_pos =
+        center
+        + position.x * camera_right
+        + position.y * camera_up;
+
+
+	gl_Position = projection * view * vec4(world_pos, 1.0);
 }
