@@ -48,13 +48,16 @@ void scene_structure::initialize()
 		{ -delta, delta,0 }
 	);
 
-	read_points_from_ply_file("./assets/nike/scene.ply", points, colors, 0.1);
+	read_points_from_ply_file("./assets/nike/scene.ply", splat_points, splat_colors, splat_scales, splat_rotations, splat_opacities, 0.1);
 
 	quad1.initialize_data_on_gpu(quad_mesh);
 	quad1.shader.load(project::path + "shaders/instancing/instancing.vert.glsl", project::path + "shaders/instancing/instancing.frag.glsl");
 	
-	quad1.initialize_supplementary_data_on_gpu(points, /*location*/ 4, /*divisor: 1=per instance, 0=per vertex*/ 1);
-	quad1.initialize_supplementary_data_on_gpu(colors, /*location*/ 5, /*divisor: 1=per instance, 0=per vertex*/ 1);
+	quad1.initialize_supplementary_data_on_gpu(splat_points, /*location*/ 4, /*divisor: 1=per instance, 0=per vertex*/ 1);
+	quad1.initialize_supplementary_data_on_gpu(splat_colors, 5, 1);
+	quad1.initialize_supplementary_data_on_gpu(splat_scales, 6, 1);
+	quad1.initialize_supplementary_data_on_gpu(splat_rotations, 7, 1);
+	// quad1.initialize_supplementary_data_on_gpu(splat_opacities, 8, 1);
 
 	std::cout << "End function scene_structure::initialize()" << std::endl;
 }
@@ -80,13 +83,24 @@ void scene_structure::display_frame()
 	// Update time
 	timer.update();
 
-	quad1.model.rotation = rotation_transform::from_axis_angle({0,0,1}, timer.t * 0.5f);
+	// quad1.model.rotation = rotation_transform::from_axis_angle({0,0,1}, timer.t * 0.5f);
 
-	draw(quad1, environment, points.size());
+	draw(quad1, environment, splat_points.size());
 
 	if (gui.display_wireframe) {
 		//draw_wireframe(terrain, environment);
 	}
+
+
+// 	glEnable(GL_BLEND);
+// 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+// 	glDepthMask(false);
+
+
+// draw(quad1, environment, splat_points.size());
+
+// 	glDepthMask(true);
+// 	glDisable(GL_BLEND);
 
 
 }

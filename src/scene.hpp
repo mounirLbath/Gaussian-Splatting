@@ -65,8 +65,11 @@ struct scene_structure : cgp::scene_inputs_generic {
 
 	mesh_drawable quad1;
 
-	numarray<vec3> points;
-	numarray<vec3> colors;
+	numarray<vec3> splat_points;
+	numarray<vec3> splat_colors;
+    numarray<vec3> splat_scales;
+    numarray<vec4> splat_rotations;
+    numarray<float> splat_opacities;
 
 
 	// ****************************** //
