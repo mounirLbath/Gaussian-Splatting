@@ -40,15 +40,16 @@ void scene_structure::initialize()
 
 	gui.display_frame = true;
 
-	float delta = 0.01;
 	mesh quad_mesh = mesh_primitive_quadrangle(
-		{ -delta,-delta,0 },
-		{  delta,-delta,0 },
-		{  delta, delta,0 },
-		{ -delta, delta,0 }
+		{ -1,-1,0 },
+		{  1,-1,0 },
+		{  1, 1,0 },
+		{ -1, 1,0 }
 	);
 
-	read_points_from_ply_file("./assets/nike/scene.ply", splat_points, splat_colors, splat_scales, splat_rotations, splat_opacities, 0.1);
+	read_points_from_ply_file("./assets/nike/scene.ply", splat_points, splat_colors, splat_scales, splat_rotations, splat_opacities, 0.2);
+
+	std::cout << splat_points.size() << " points" << std::endl;
 
 	quad1.initialize_data_on_gpu(quad_mesh);
 	quad1.shader.load(project::path + "shaders/instancing/instancing.vert.glsl", project::path + "shaders/instancing/instancing.frag.glsl");
@@ -57,7 +58,14 @@ void scene_structure::initialize()
 	quad1.initialize_supplementary_data_on_gpu(splat_colors, 5, 1);
 	quad1.initialize_supplementary_data_on_gpu(splat_scales, 6, 1);
 	quad1.initialize_supplementary_data_on_gpu(splat_rotations, 7, 1);
-	// quad1.initialize_supplementary_data_on_gpu(splat_opacities, 8, 1);
+
+	numarray<vec3> splat_opacities_gpu;
+	splat_opacities_gpu.resize(splat_opacities.size());
+
+	for (int k = 0; k < splat_opacities.size(); ++k)
+		splat_opacities_gpu[k] = {splat_opacities[k], 0.0f, 0.0f};
+
+	quad1.initialize_supplementary_data_on_gpu(splat_opacities_gpu, 8, 1);
 
 	std::cout << "End function scene_structure::initialize()" << std::endl;
 }
@@ -85,22 +93,22 @@ void scene_structure::display_frame()
 
 	// quad1.model.rotation = rotation_transform::from_axis_angle({0,0,1}, timer.t * 0.5f);
 
+	//draw(quad1, environment, splat_points.size());
+
+	// if (gui.display_wireframe) {
+	// 	//draw_wireframe(terrain, environment);
+	// }
+
+
+	glEnable(GL_BLEND);
+	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	glDepthMask(false);
+
+
 	draw(quad1, environment, splat_points.size());
 
-	if (gui.display_wireframe) {
-		//draw_wireframe(terrain, environment);
-	}
-
-
-// 	glEnable(GL_BLEND);
-// 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-// 	glDepthMask(false);
-
-
-// draw(quad1, environment, splat_points.size());
-
-// 	glDepthMask(true);
-// 	glDisable(GL_BLEND);
+	glDepthMask(true);
+	glDisable(GL_BLEND);
 
 
 }

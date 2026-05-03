@@ -7,6 +7,40 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <cmath>
+
+
+float sigmoid(float x)
+{
+	return 1.0f / (1.0f + std::exp(-x));
+}
+
+
+// Spherical Harmonics to RGB conversion 
+constexpr float C0 = 0.28209479177387814f; // Y^0_0 = 1 / sqrt(4pi)
+cgp::vec3 sh_dc_to_rgb(float f0, float f1, float f2)
+{
+	float r = 0.5f + C0 * f0;
+	float g = 0.5f + C0 * f1;
+	float b = 0.5f + C0 * f2;
+	r = std::max(0.0f, std::min(1.0f, r));
+	g = std::max(0.0f, std::min(1.0f, g));
+	b = std::max(0.0f, std::min(1.0f, b));
+	return { r, g, b };
+}
+
+// PLY stores quaternion as (w,x,y,z) in rot_0..3; GLSL uses vec4(x,y,z,w).
+cgp::vec4 ply_rot_to_shader_quat(float w, float x, float y, float z)
+{
+	float len = std::sqrt(w * w + x * x + y * y + z * z);
+	if (len > 1e-6f) {
+		w /= len;
+		x /= len;
+		y /= len;
+		z /= len;
+	}
+	return { x, y, z, w };
+}
 
 void read_points_from_ply_file(
     const std::string& filepath,
@@ -120,10 +154,10 @@ void read_points_from_ply_file(
 		if(percentage > 0.99f || static_cast<float>(rand()) / RAND_MAX <= percentage)
 		{
 			points.push_back({x, y, z});
-			colors.push_back({f0, f1, f2});
-			scales.push_back({scale0, scale1, scale2});
-			rotations.push_back({rot0, rot1, rot2, rot3});
-			opacities.push_back(opacity);
+			colors.push_back(sh_dc_to_rgb(f0, f1, f2));
+			scales.push_back({std::exp(scale0), std::exp(scale1), std::exp(scale2)});
+			rotations.push_back(ply_rot_to_shader_quat(rot0, rot1, rot2, rot3));
+			opacities.push_back(sigmoid(opacity));
 		}
 
 		ptr += vertexSize;
