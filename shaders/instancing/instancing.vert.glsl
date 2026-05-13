@@ -19,6 +19,7 @@ flat out vec3 frag_color;
 flat out float frag_opacity;
 out vec2 frag_delta;
 flat out mat2 inv_sigma2D;
+out vec2 uv;
 
 
 mat3 quat_to_mat3(vec4 q)
@@ -34,9 +35,6 @@ mat3 quat_to_mat3(vec4 q)
 
 void main()
 {
-	float inv_aspect_ratio = projection[0][0]/projection[1][1]; // height/width
-
-
     int i = int(instance_idx);
 	vec3 instance_position = texelFetch(splat_points_tbo,     i).rgb;
     vec3 instance_color    = texelFetch(splat_colors_tbo,   i).rgb;
@@ -77,7 +75,7 @@ void main()
 
 
 	// compute the quad position in NDC coordinates
-	float a = sigma2D[0][0]; float b = inv_aspect_ratio*inv_aspect_ratio*sigma2D[1][1]; float c = inv_aspect_ratio*sigma2D[0][1];
+	float a = sigma2D[0][0]; float b = sigma2D[1][1]; float c = sigma2D[0][1];
 	float det = a*b-c*c; 
 	float tr = a+b;
 	float discr = tr*tr-4*det;
@@ -86,8 +84,11 @@ void main()
 
 	vec2 dir1 = vec2((lambda1-b), c); dir1 = normalize(dir1);
 	vec2 dir2 = vec2(-dir1.y, dir1.x); 
-	mat2 K = mat2(1,0,0,1/inv_aspect_ratio);
-	vec2 delta = 3.0*(sqrt(lambda1)*vertex_position.x * K*dir1 + sqrt(lambda2)*vertex_position.y * K* dir2);
+	
+	float spread = 3.0;
+	vec2 delta = spread*(sqrt(lambda1)*vertex_position.x * dir1 + sqrt(lambda2)*vertex_position.y * dir2);
+	
+	uv = vertex_position.xy *spread;
 
 	vec4 screen_position = projection * view_center;
 
