@@ -211,7 +211,8 @@ void scene_structure::display_frame()
 		glBufferSubData(GL_ARRAY_BUFFER, 0, GLsizeiptr(splat_indices.size()) * GLsizeiptr(sizeof(int)), ptr(splat_indices));
 		glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-		//quad1.update_supplementary_data_on_gpu(splat_indices, 4, splat_indices.size());
+
+		environment.uniform_generic.uniform_float["alpha_cutoff"] = gui.alpha_cutoff;
 
 		draw(quad1, environment, splat_indices.size());
 	}
@@ -227,6 +228,7 @@ void scene_structure::display_gui()
 {
 	ImGui::Checkbox("Frame", &gui.display_frame);
 	ImGui::Checkbox("Wireframe", &gui.display_wireframe);
+	ImGui::SliderFloat("Alpha cutoff", &gui.alpha_cutoff, 1e-6f, 1.0f, "%.5f", ImGuiSliderFlags_Logarithmic);
 }
 
 
