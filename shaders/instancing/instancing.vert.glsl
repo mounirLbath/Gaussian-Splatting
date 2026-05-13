@@ -2,8 +2,7 @@
 
 layout (location = 0) in vec3 vertex_position; // vertex position in local space (x,y,z)
 
-layout(location = 9) in uint instance_idx;
-
+layout(location = 4) in uint instance_idx;
 
 uniform samplerBuffer splat_points_tbo;
 uniform samplerBuffer splat_colors_tbo;
@@ -35,6 +34,9 @@ mat3 quat_to_mat3(vec4 q)
 
 void main()
 {
+	float inv_aspect_ratio = projection[0][0]/projection[1][1]; // height/width
+
+
     int i = int(instance_idx);
 	vec3 instance_position = texelFetch(splat_points_tbo,     i).rgb;
     vec3 instance_color    = texelFetch(splat_colors_tbo,   i).rgb;
@@ -53,8 +55,8 @@ void main()
 
 	
 	// compute the 3d covariance matrix
-	mat3 R = quat_to_mat3(instance_rot);
-	mat3 S_mat = mat3(
+	mat3 R = quat_to_mat3(instance_rot);   // Precompute + renvoyer en int32 // pack x half
+	mat3 S_mat = mat3(                       
         instance_scale.x * instance_scale.x, 0, 0,
         0, instance_scale.y * instance_scale.y, 0,
         0, 0, instance_scale.z * instance_scale.z
@@ -68,15 +70,24 @@ void main()
 	float diag1 = projection[0][0];
 	float diag2 = projection[1][1];
 	mat3x2 J = transpose(mat2x3(
-		-diag1/view_center.z, 0.0, view_center.x * diag1 / (view_center.z*view_center.z),
-		0.0, -diag2/view_center.z, view_center.y * diag2 / (view_center.z*view_center.z)
-	));
+		-diag1/view_center.z, 0.0                 , view_center.x * diag1 / (view_center.z*view_center.z),
+		0.0                 , -diag2/view_center.z, view_center.y * diag2 / (view_center.z*view_center.z)));
 
 	mat2 sigma2D = J * sigma_view * transpose(J); // the covariance matrix in NDC coordinates
 
 
 	// compute the quad position in NDC coordinates
-	vec2 delta = vec2(vertex_position.x * sqrt(sigma2D[0][0]) * 3.0, vertex_position.y * sqrt(sigma2D[1][1]) * 3.0); // 3 * std in each direction
+	float a = sigma2D[0][0]; float b = inv_aspect_ratio*inv_aspect_ratio*sigma2D[1][1]; float c = inv_aspect_ratio*sigma2D[0][1];
+	float det = a*b-c*c; 
+	float tr = a+b;
+	float discr = tr*tr-4*det;
+	float lambda1 = (tr + sqrt(discr))/2.0; 
+	float lambda2 = (tr - sqrt(discr))/2.0; 
+
+	vec2 dir1 = vec2((lambda1-b), c); dir1 = normalize(dir1);
+	vec2 dir2 = vec2(-dir1.y, dir1.x); 
+	mat2 K = mat2(1,0,0,1/inv_aspect_ratio);
+	vec2 delta = 3.0*(sqrt(lambda1)*vertex_position.x * K*dir1 + sqrt(lambda2)*vertex_position.y * K* dir2);
 
 	vec4 screen_position = projection * view_center;
 

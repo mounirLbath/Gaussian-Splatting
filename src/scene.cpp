@@ -42,16 +42,13 @@ void create_tbo(GLuint& buffer, GLuint& texture,
 	glBindBuffer(GL_TEXTURE_BUFFER, 0);
 }
 
-void setup_instance_index_vao(GLuint vao, GLuint index_vbo)
+void setup_instance_index_vao(GLuint vao, GLuint index_vbo, int location)
 {
 	glBindVertexArray(vao);
-	for (int loc = 4; loc <= 8; ++loc)
-		glDisableVertexAttribArray(GLuint(loc));
-
 	glBindBuffer(GL_ARRAY_BUFFER, index_vbo);
-	glVertexAttribIPointer(9, 1, GL_UNSIGNED_INT, 0, nullptr);
-	glVertexAttribDivisor(9, 1);
-	glEnableVertexAttribArray(9);
+	glVertexAttribIPointer(location, 1, GL_UNSIGNED_INT, 0, nullptr);
+	glVertexAttribDivisor(location, 1);
+	glEnableVertexAttribArray(location);
 	glBindVertexArray(0);
 }
 
@@ -141,7 +138,9 @@ void scene_structure::initialize()
 		glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(n) * GLsizeiptr(sizeof(int)), ptr(splat_indices), GL_DYNAMIC_DRAW);
 		glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-		setup_instance_index_vao(quad1.vao, vbo_indices);
+		setup_instance_index_vao(quad1.vao, vbo_indices, /* location = */ 4);
+
+		// quad1.initialize_supplementary_data_on_gpu(splat_indices,4,1);
 	}
 
 	std::cout << "End function scene_structure::initialize()" << std::endl;
@@ -161,7 +160,6 @@ void scene_structure::display_frame()
 	environment.camera_projection = camera_projection.matrix();
 	environment.camera_view = camera_control.camera_model.matrix_view();
 	environment.light = camera_control.camera_model.position();
-	
 
 	// Draw the 3D reference frame axes if enabled
 	if (gui.display_frame)
@@ -183,7 +181,7 @@ void scene_structure::display_frame()
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 	glDepthMask(false);
 
-	if (splat_points.size() > 0 && vbo_indices != 0u) {
+	if (splat_points.size() > 0){ //&& vbo_indices != 0u) {
 		GLuint const shader = quad1.shader.id;
 		glUseProgram(shader);
 
@@ -212,6 +210,8 @@ void scene_structure::display_frame()
 		glBindBuffer(GL_ARRAY_BUFFER, vbo_indices);
 		glBufferSubData(GL_ARRAY_BUFFER, 0, GLsizeiptr(splat_indices.size()) * GLsizeiptr(sizeof(int)), ptr(splat_indices));
 		glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+		//quad1.update_supplementary_data_on_gpu(splat_indices, 4, splat_indices.size());
 
 		draw(quad1, environment, splat_indices.size());
 	}
