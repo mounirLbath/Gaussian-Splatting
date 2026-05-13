@@ -2,11 +2,15 @@
 
 layout (location = 0) in vec3 vertex_position; // vertex position in local space (x,y,z)
 
-layout (location = 4) in vec3 instance_position; 
-layout (location = 5) in vec3 instance_color; 
-layout (location = 6) in vec3 instance_scale; 
-layout (location = 7) in vec4 instance_rot; 
-layout (location = 8) in vec3 instance_opacity;
+layout(location = 9) in uint instance_idx;
+
+
+uniform samplerBuffer splat_points_tbo;
+uniform samplerBuffer splat_colors_tbo;
+uniform samplerBuffer splat_scales_tbo;
+uniform samplerBuffer splat_rotations_tbo;
+uniform samplerBuffer splat_opacities_tbo;
+
 
 uniform mat4 model;
 uniform mat4 view;
@@ -31,9 +35,16 @@ mat3 quat_to_mat3(vec4 q)
 
 void main()
 {
+    int i = int(instance_idx);
+	vec3 instance_position = texelFetch(splat_points_tbo,     i).rgb;
+    vec3 instance_color    = texelFetch(splat_colors_tbo,   i).rgb;
+    vec3 instance_scale    = texelFetch(splat_scales_tbo,   i).rgb;
+    vec4 instance_rot      = texelFetch(splat_rotations_tbo,     i);
+    float instance_opacity = texelFetch(splat_opacities_tbo, i).r;
+	
 
 	frag_color = instance_color;
-	frag_opacity = instance_opacity.x;
+	frag_opacity = instance_opacity;
 
 
 	// center in world

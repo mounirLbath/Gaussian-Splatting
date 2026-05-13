@@ -22,3 +22,7 @@ void read_points_from_ply_file(
     cgp::numarray<float>& opacities,
     float percentage = 1.0f
 );
+
+
+// sort points by depth
+void sortPoints(cgp::numarray<int>& indices, const cgp::numarray<cgp::vec3>& points, const cgp::vec3& view);

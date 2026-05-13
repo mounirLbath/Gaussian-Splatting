@@ -8,7 +8,7 @@
 #include <cstring>
 #include <fstream>
 #include <cmath>
-
+#include <algorithm>
 
 float sigmoid(float x)
 {
@@ -162,4 +162,19 @@ void read_points_from_ply_file(
 
 		ptr += vertexSize;
 	}
+}
+
+
+void sortPoints(cgp::numarray<int>& indices, const cgp::numarray<cgp::vec3>& points, const cgp::vec3& view)
+{
+	auto depth_sq = [&](int idx) {
+		return dot(points[idx] - view, points[idx] - view);
+	};
+
+	std::sort(indices.begin(), indices.end(), [&](int a, int b) {
+		float depth_a = depth_sq(a);
+		float depth_b = depth_sq(b);
+		if(depth_a != depth_b) return depth_a > depth_b;
+		return a < b;
+	});
 }

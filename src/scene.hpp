@@ -72,6 +72,16 @@ struct scene_structure : cgp::scene_inputs_generic {
     numarray<float> splat_opacities;
 
 
+	GLuint tbo_points = 0, tex_points = 0;
+	GLuint tbo_colors = 0, tex_colors = 0;
+	GLuint tbo_scales = 0, tex_scales = 0;
+	GLuint tbo_rotations = 0, tex_rotations = 0;
+	GLuint tbo_opacities = 0, tex_opacities = 0;
+
+	GLuint vbo_indices = 0;
+	cgp::numarray<int> splat_indices;
+
+
 	// ****************************** //
 	// Callback functions
 	// ****************************** //
