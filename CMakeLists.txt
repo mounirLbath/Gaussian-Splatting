@@ -25,7 +25,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 # Compile definitions (macros)
 target_compile_definitions(${PROJECT_NAME} PRIVATE
     SOLUTION
-    CGP_OPENGL_3_3                # OpenGL version (alternatives: CGP_OPENGL_4_1, CGP_OPENGL_4_3, CGP_OPENGL_4_6)
+    CGP_OPENGL_4_3               # OpenGL version (alternatives: CGP_OPENGL_3_3, CGP_OPENGL_4_1, CGP_OPENGL_4_3, CGP_OPENGL_4_6)
     IMGUI_IMPL_OPENGL_LOADER_GLAD # ImGui uses GLAD for OpenGL loading
     CGP_ERROR_EXCEPTION           # Throw exceptions on errors (comment to abort instead)
     # CGP_NO_DEBUG                # Uncomment to disable assertions

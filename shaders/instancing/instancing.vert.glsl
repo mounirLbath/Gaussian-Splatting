@@ -1,13 +1,15 @@
-#version 330 core
+#version 430 core
 
 layout (location = 0) in vec3 vertex_position; // vertex position in local space (x,y,z)
 
 layout(location = 4) in uint instance_idx;
 
-uniform samplerBuffer splat_points_tbo;
-uniform samplerBuffer splat_colors_tbo;
-uniform samplerBuffer splat_covariances_tbo; // 2 RGBA texels per splat: (Sxx,Syy,Szz,Sxy), (Sxz,Syz,_,_)
-uniform samplerBuffer splat_opacities_tbo;
+// Per-splat data uploaded once as std430 SSBOs. Each vec3 is padded to vec4
+layout(std430, binding = 0) readonly buffer SplatPoints      { vec4  data[]; } splat_points;
+layout(std430, binding = 1) readonly buffer SplatColors      { vec4  data[]; } splat_colors;
+// 2 vec4 per splat: (Sxx, Syy, Szz, Sxy) then (Sxz, Syz, _, _)
+layout(std430, binding = 2) readonly buffer SplatCovariances { vec4  data[]; } splat_covariances;
+layout(std430, binding = 3) readonly buffer SplatOpacities   { float data[]; } splat_opacities;
 
 
 uniform mat4 model;
@@ -21,12 +23,12 @@ out vec2 uv;
 
 void main()
 {
-    int i = int(instance_idx);
-	vec3 instance_position = texelFetch(splat_points_tbo,    i).rgb;
-    vec3 instance_color    = texelFetch(splat_colors_tbo,    i).rgb;
-    vec4 cov_a             = texelFetch(splat_covariances_tbo, 2*i + 0); // (Sxx, Syy, Szz, Sxy)
-    vec4 cov_b             = texelFetch(splat_covariances_tbo, 2*i + 1); // (Sxz, Syz, _, _)
-    float instance_opacity = texelFetch(splat_opacities_tbo, i).r;
+	int i = int(instance_idx);
+	vec3  instance_position = splat_points.data[i].xyz;
+	vec3  instance_color = splat_colors.data[i].xyz;
+	vec4  cov_a = splat_covariances.data[2*i + 0]; // (Sxx, Syy, Szz, Sxy)
+	vec4  cov_b = splat_covariances.data[2*i + 1]; // (Sxz, Syz, _, _)
+	float instance_opacity  = splat_opacities.data[i];
 
 
 	frag_color = instance_color;

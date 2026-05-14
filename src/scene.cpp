@@ -17,39 +17,26 @@ namespace {
 	return out;
 }
 
+// Create a SSBO and upload the given array to it.
 template <typename T>
-void create_tbo(GLuint& buffer, GLuint& texture,
-                numarray<T> const& data,
-                GLenum internal_format)
+void create_ssbo(GLuint& ssbo, numarray<T> const& data)
 {
 	if (data.size() <= 0)
 		return;
-	glGenBuffers(1, &buffer);
-	glBindBuffer(GL_TEXTURE_BUFFER, buffer);
+	glGenBuffers(1, &ssbo);
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
 	glBufferData(
-		GL_TEXTURE_BUFFER,
+		GL_SHADER_STORAGE_BUFFER,
 		GLsizeiptr(data.size()) * GLsizeiptr(sizeof(T)),
 		ptr(data),
 		GL_STATIC_DRAW);
-
-	glGenTextures(1, &texture);
-	glBindTexture(GL_TEXTURE_BUFFER, texture);
-	glTexBuffer(GL_TEXTURE_BUFFER, internal_format, buffer);
-
-	glBindTexture(GL_TEXTURE_BUFFER, 0);
-	glBindBuffer(GL_TEXTURE_BUFFER, 0);
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 }
 
-void bind_tbo_to_shader(
-    GLuint shader,
-    GLuint texture,
-    char const* uniform_name,
-    int texture_unit)
+// Bind an SSBO to a fixed binding point matching the shader's
+void bind_ssbo(GLuint ssbo, GLuint binding_point)
 {
-    glUseProgram(shader);
-    glActiveTexture(GL_TEXTURE0 + texture_unit);
-    glBindTexture(GL_TEXTURE_BUFFER, texture);
-    glUniform1i(glGetUniformLocation(shader, uniform_name), texture_unit);
+	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, binding_point, ssbo);
 }
 
 void setup_instance_index_vao(GLuint vao, GLuint index_vbo, int location)
@@ -131,12 +118,13 @@ void scene_structure::initialize()
 	numarray<vec4> splat_covariances;
 	compute_covariances_from_scales_and_rotations(splat_scales, splat_rotations, splat_covariances);
 
+	// Upload per-splat data to SSBOs. Points and colors are padded to vec4
 	numarray<vec4> const pos4 = pad_vec3_to_vec4(splat_points);
 	numarray<vec4> const col4 = pad_vec3_to_vec4(splat_colors);
-	create_tbo(tbo_points,      tex_points,      pos4,              GL_RGBA32F);
-	create_tbo(tbo_colors,      tex_colors,      col4,              GL_RGBA32F);
-	create_tbo(tbo_covariances, tex_covariances, splat_covariances, GL_RGBA32F);
-	create_tbo(tbo_opacities,   tex_opacities,   splat_opacities,   GL_R32F);
+	create_ssbo(ssbo_points, pos4);
+	create_ssbo(ssbo_colors, col4);
+	create_ssbo(ssbo_covariances, splat_covariances);
+	create_ssbo(ssbo_opacities, splat_opacities);
 
 	glGenBuffers(1, &vbo_indices);
 	glBindBuffer(GL_ARRAY_BUFFER, vbo_indices);
@@ -145,11 +133,11 @@ void scene_structure::initialize()
 
 	setup_instance_index_vao(quad1.vao, vbo_indices, /* location = */ 4);
 
-	GLuint const shader = quad1.shader.id;
-	bind_tbo_to_shader(shader, tex_points,      "splat_points_tbo",      1);
-	bind_tbo_to_shader(shader, tex_colors,      "splat_colors_tbo",      2);
-	bind_tbo_to_shader(shader, tex_covariances, "splat_covariances_tbo", 3);
-	bind_tbo_to_shader(shader, tex_opacities,   "splat_opacities_tbo",   4);
+	// Bind each SSBO once to its binding point
+	bind_ssbo(ssbo_points, 0);
+	bind_ssbo(ssbo_colors, 1);
+	bind_ssbo(ssbo_covariances, 2);
+	bind_ssbo(ssbo_opacities, 3);
 
 
 	std::cout << "End function scene_structure::initialize()" << std::endl;

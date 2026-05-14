@@ -70,10 +70,11 @@ struct scene_structure : cgp::scene_inputs_generic {
 	numarray<float> splat_opacities;
 
 
-	GLuint tbo_points = 0, tex_points = 0;
-	GLuint tbo_colors = 0, tex_colors = 0;
-	GLuint tbo_covariances = 0, tex_covariances = 0;
-	GLuint tbo_opacities = 0, tex_opacities = 0;
+	// Per-splat data stored as SSBOs
+	GLuint ssbo_points = 0;
+	GLuint ssbo_colors = 0;
+	GLuint ssbo_covariances = 0;
+	GLuint ssbo_opacities = 0;
 
 	GLuint vbo_indices = 0;
 	cgp::numarray<int> splat_indices;
