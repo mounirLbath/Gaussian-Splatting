@@ -11,7 +11,7 @@ using cgp::mesh_drawable;
 
 struct gui_parameters {
 	bool display_frame = false;
-	float alpha_cutoff = 1e-5f;
+	float alpha_cutoff = 0.004f;
 };
 
 
@@ -67,15 +67,12 @@ struct scene_structure : cgp::scene_inputs_generic {
 
 	numarray<vec3> splat_points;
 	numarray<vec3> splat_colors;
-    numarray<vec3> splat_scales;
-    numarray<vec4> splat_rotations;
-    numarray<float> splat_opacities;
+	numarray<float> splat_opacities;
 
 
 	GLuint tbo_points = 0, tex_points = 0;
 	GLuint tbo_colors = 0, tex_colors = 0;
-	GLuint tbo_scales = 0, tex_scales = 0;
-	GLuint tbo_rotations = 0, tex_rotations = 0;
+	GLuint tbo_covariances = 0, tex_covariances = 0;
 	GLuint tbo_opacities = 0, tex_opacities = 0;
 
 	GLuint vbo_indices = 0;

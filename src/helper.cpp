@@ -178,3 +178,26 @@ void sortPoints(cgp::numarray<int>& indices, const cgp::numarray<cgp::vec3>& poi
 		return a < b;
 	});
 }
+
+
+void compute_covariances_from_scales_and_rotations(
+    cgp::numarray<cgp::vec3> const& scales,
+    cgp::numarray<cgp::vec4> const& rotations,
+    cgp::numarray<cgp::vec4>& out_covariances)
+{
+	int const n = scales.size();
+	out_covariances.resize(n * 2);
+
+	for (int k = 0; k < n; ++k) {
+		cgp::vec3 const& s = scales[k];
+		cgp::vec4 const& q = rotations[k]; // (x, y, z, w)
+
+		// Rotation R from the unit quaternion 
+		cgp::mat3 const R = cgp::mat3::build_rotation_from_quaternion(cgp::quaternion{q.x, q.y, q.z, q.w});
+		cgp::mat3 const S2 = cgp::mat3::build_diagonal(s.x * s.x, s.y * s.y, s.z * s.z);
+		cgp::mat3 const Sigma = R * S2 * transpose(R);
+
+		out_covariances[2 * k + 0] = { Sigma(0,0), Sigma(1,1), Sigma(2,2), Sigma(0,1) };
+		out_covariances[2 * k + 1] = { Sigma(0,2), Sigma(1,2), 0.0f, 0.0f};
+	}
+}

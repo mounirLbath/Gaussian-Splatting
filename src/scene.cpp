@@ -111,6 +111,8 @@ void scene_structure::initialize()
 		{ -1, 1,0 }
 	);
 
+	numarray<vec3> splat_scales;
+	numarray<vec4> splat_rotations;
 	read_points_from_ply_file("./assets/nike/scene.ply", splat_points, splat_colors, splat_scales, splat_rotations, splat_opacities, 0.7);
 
 	std::cout << splat_points.size() << " points" << std::endl;
@@ -125,14 +127,16 @@ void scene_structure::initialize()
 	for (int k = 0; k < n; ++k)
 		splat_indices[k] = k;
 
+	// Precompute the 3D covariance Sigma = R * diag(s^2) * R^T on the CPU
+	numarray<vec4> splat_covariances;
+	compute_covariances_from_scales_and_rotations(splat_scales, splat_rotations, splat_covariances);
+
 	numarray<vec4> const pos4 = pad_vec3_to_vec4(splat_points);
 	numarray<vec4> const col4 = pad_vec3_to_vec4(splat_colors);
-	numarray<vec4> const scl4 = pad_vec3_to_vec4(splat_scales);
-	create_tbo(tbo_points, tex_points, pos4, GL_RGBA32F);
-	create_tbo(tbo_colors, tex_colors, col4, GL_RGBA32F);
-	create_tbo(tbo_scales, tex_scales, scl4, GL_RGBA32F);
-	create_tbo(tbo_rotations, tex_rotations, splat_rotations, GL_RGBA32F);
-	create_tbo(tbo_opacities, tex_opacities, splat_opacities, GL_R32F);
+	create_tbo(tbo_points,      tex_points,      pos4,              GL_RGBA32F);
+	create_tbo(tbo_colors,      tex_colors,      col4,              GL_RGBA32F);
+	create_tbo(tbo_covariances, tex_covariances, splat_covariances, GL_RGBA32F);
+	create_tbo(tbo_opacities,   tex_opacities,   splat_opacities,   GL_R32F);
 
 	glGenBuffers(1, &vbo_indices);
 	glBindBuffer(GL_ARRAY_BUFFER, vbo_indices);
@@ -142,11 +146,10 @@ void scene_structure::initialize()
 	setup_instance_index_vao(quad1.vao, vbo_indices, /* location = */ 4);
 
 	GLuint const shader = quad1.shader.id;
-	bind_tbo_to_shader(shader, tex_points, "splat_points_tbo", 1);
-	bind_tbo_to_shader(shader, tex_colors, "splat_colors_tbo", 2);
-	bind_tbo_to_shader(shader, tex_scales, "splat_scales_tbo", 3);
-	bind_tbo_to_shader(shader, tex_rotations, "splat_rotations_tbo", 4);
-	bind_tbo_to_shader(shader, tex_opacities, "splat_opacities_tbo", 5);
+	bind_tbo_to_shader(shader, tex_points,      "splat_points_tbo",      1);
+	bind_tbo_to_shader(shader, tex_colors,      "splat_colors_tbo",      2);
+	bind_tbo_to_shader(shader, tex_covariances, "splat_covariances_tbo", 3);
+	bind_tbo_to_shader(shader, tex_opacities,   "splat_opacities_tbo",   4);
 
 
 	std::cout << "End function scene_structure::initialize()" << std::endl;

@@ -26,3 +26,11 @@ void read_points_from_ply_file(
 
 // sort points by depth
 void sortPoints(cgp::numarray<int>& indices, const cgp::numarray<cgp::vec3>& points, const cgp::vec3& view);
+
+
+// Precompute the symmetric 3D covariance matrices Sigma = R * diag(scale^2) * R^T for each splat
+void compute_covariances_from_scales_and_rotations(
+    cgp::numarray<cgp::vec3> const& scales,
+    cgp::numarray<cgp::vec4> const& rotations,
+    cgp::numarray<cgp::vec4>& out_covariances
+);

@@ -6,8 +6,7 @@ layout(location = 4) in uint instance_idx;
 
 uniform samplerBuffer splat_points_tbo;
 uniform samplerBuffer splat_colors_tbo;
-uniform samplerBuffer splat_scales_tbo;
-uniform samplerBuffer splat_rotations_tbo;
+uniform samplerBuffer splat_covariances_tbo; // 2 RGBA texels per splat: (Sxx,Syy,Szz,Sxy), (Sxz,Syz,_,_)
 uniform samplerBuffer splat_opacities_tbo;
 
 
@@ -20,26 +19,15 @@ flat out float frag_opacity;
 out vec2 uv;
 
 
-mat3 quat_to_mat3(vec4 q)
-{
-    float x = q.x, y = q.y, z = q.z, w = q.w;
-
-    return transpose(mat3(
-        1 - 2*y*y - 2*z*z,   2*x*y - 2*z*w,     2*x*z + 2*y*w,
-        2*x*y + 2*z*w,       1 - 2*x*x - 2*z*z, 2*y*z - 2*x*w,
-        2*x*z - 2*y*w,       2*y*z + 2*x*w,     1 - 2*x*x - 2*y*y
-    ));
-}
-
 void main()
 {
     int i = int(instance_idx);
-	vec3 instance_position = texelFetch(splat_points_tbo,     i).rgb;
-    vec3 instance_color    = texelFetch(splat_colors_tbo,   i).rgb;
-    vec3 instance_scale    = texelFetch(splat_scales_tbo,   i).rgb;
-    vec4 instance_rot      = texelFetch(splat_rotations_tbo,     i);
+	vec3 instance_position = texelFetch(splat_points_tbo,    i).rgb;
+    vec3 instance_color    = texelFetch(splat_colors_tbo,    i).rgb;
+    vec4 cov_a             = texelFetch(splat_covariances_tbo, 2*i + 0); // (Sxx, Syy, Szz, Sxy)
+    vec4 cov_b             = texelFetch(splat_covariances_tbo, 2*i + 1); // (Sxz, Syz, _, _)
     float instance_opacity = texelFetch(splat_opacities_tbo, i).r;
-	
+
 
 	frag_color = instance_color;
 	frag_opacity = instance_opacity;
@@ -49,16 +37,13 @@ void main()
 	mat4 MV = view * model;
 	vec4 view_center =  MV * vec4(instance_position, 1.0);
 
-	
-	// compute the 3d covariance matrix
-	mat3 R = quat_to_mat3(instance_rot);   // Precompute + renvoyer en int32 // pack x half
-	mat3 S_mat = mat3(                       
-        instance_scale.x * instance_scale.x, 0, 0,
-        0, instance_scale.y * instance_scale.y, 0,
-        0, 0, instance_scale.z * instance_scale.z
-    );
 
-	mat3 sigma3D = R * S_mat * transpose(R);
+	// Reconstruct the symmetric 3D covariance from its 6 unique entries
+	mat3 sigma3D = mat3(
+		cov_a.x, cov_a.w, cov_b.x,  // col 0: (Sxx, Sxy, Sxz)
+		cov_a.w, cov_a.y, cov_b.y,  // col 1: (Sxy, Syy, Syz)
+		cov_b.x, cov_b.y, cov_a.z   // col 2: (Sxz, Syz, Szz)
+	);
 	mat3 V = mat3(MV);
 	mat3 sigma_view = V * sigma3D * transpose(V);
 
@@ -82,7 +67,7 @@ void main()
 	vec2 dir1 = vec2((lambda1-b), c); dir1 = normalize(dir1);
 	vec2 dir2 = vec2(-dir1.y, dir1.x); 
 	
-	float spread = 3.0;
+	float spread = 2.0;
 	vec2 delta = spread*(sqrt(lambda1)*vertex_position.x * dir1 + sqrt(lambda2)*vertex_position.y * dir2);
 	
 	uv = vertex_position.xy *spread;
