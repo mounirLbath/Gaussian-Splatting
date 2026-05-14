@@ -5,9 +5,7 @@ using namespace cgp;
 
 namespace {
 
-constexpr int kSplatTboTextureUnitFirst = 1;
-
-numarray<vec4> pad_vec3_to_vec4(numarray<vec3> const& src)
+	numarray<vec4> pad_vec3_to_vec4(numarray<vec3> const& src)
 {
 	int const n = src.size();
 	numarray<vec4> out;
@@ -42,12 +40,24 @@ void create_tbo(GLuint& buffer, GLuint& texture,
 	glBindBuffer(GL_TEXTURE_BUFFER, 0);
 }
 
+void bind_tbo_to_shader(
+    GLuint shader,
+    GLuint texture,
+    char const* uniform_name,
+    int texture_unit)
+{
+    glUseProgram(shader);
+    glActiveTexture(GL_TEXTURE0 + texture_unit);
+    glBindTexture(GL_TEXTURE_BUFFER, texture);
+    glUniform1i(glGetUniformLocation(shader, uniform_name), texture_unit);
+}
+
 void setup_instance_index_vao(GLuint vao, GLuint index_vbo, int location)
 {
 	glBindVertexArray(vao);
 	glBindBuffer(GL_ARRAY_BUFFER, index_vbo);
 	glVertexAttribIPointer(location, 1, GL_UNSIGNED_INT, 0, nullptr);
-	glVertexAttribDivisor(location, 1);
+	glVertexAttribDivisor(location, 1); // advance this attribute once per instance instead of once per vertex
 	glEnableVertexAttribArray(location);
 	glBindVertexArray(0);
 }
@@ -86,6 +96,9 @@ void scene_structure::initialize()
 	// Create 3D coordinate frame (x, y, z axes) for visual reference
 	global_frame.initialize_data_on_gpu(mesh_primitive_frame());
 
+	// Change the background color to black
+	environment.background_color = {0, 0, 0};
+
 	// Initialize the shapes of the scene
 	// ***************************************** //
 
@@ -106,46 +119,38 @@ void scene_structure::initialize()
 	quad1.shader.load(project::path + "shaders/instancing/instancing.vert.glsl", project::path + "shaders/instancing/instancing.frag.glsl");
 	// quad1.model.rotation = rotation_transform::from_axis_angle({1,0,0}, -3.14/2.0);
 	// quad1.initialize_supplementary_data_on_gpu(splat_points, /*location*/ 4, /*divisor: 1=per instance, 0=per vertex*/ 1);
-	// quad1.initialize_supplementary_data_on_gpu(splat_colors, 5, 1);
-	// quad1.initialize_supplementary_data_on_gpu(splat_scales, 6, 1);
-	// quad1.initialize_supplementary_data_on_gpu(splat_rotations, 7, 1);
-
-	// numarray<vec3> splat_opacities_gpu;
-	// splat_opacities_gpu.resize(splat_opacities.size());
-
-	// for (int k = 0; k < splat_opacities.size(); ++k)
-	// 	splat_opacities_gpu[k] = {splat_opacities[k], 0.0f, 0.0f};
-
-	// quad1.initialize_supplementary_data_on_gpu(splat_opacities_gpu, 8, 1);
 
 	int const n = splat_points.size();
 	splat_indices.resize(n);
 	for (int k = 0; k < n; ++k)
 		splat_indices[k] = k;
 
-	if (n > 0) {
-		numarray<vec4> const pos4 = pad_vec3_to_vec4(splat_points);
-		numarray<vec4> const col4 = pad_vec3_to_vec4(splat_colors);
-		numarray<vec4> const scl4 = pad_vec3_to_vec4(splat_scales);
-		create_tbo(tbo_points, tex_points, pos4, GL_RGBA32F);
-		create_tbo(tbo_colors, tex_colors, col4, GL_RGBA32F);
-		create_tbo(tbo_scales, tex_scales, scl4, GL_RGBA32F);
-		create_tbo(tbo_rotations, tex_rotations, splat_rotations, GL_RGBA32F);
-		create_tbo(tbo_opacities, tex_opacities, splat_opacities, GL_R32F);
+	numarray<vec4> const pos4 = pad_vec3_to_vec4(splat_points);
+	numarray<vec4> const col4 = pad_vec3_to_vec4(splat_colors);
+	numarray<vec4> const scl4 = pad_vec3_to_vec4(splat_scales);
+	create_tbo(tbo_points, tex_points, pos4, GL_RGBA32F);
+	create_tbo(tbo_colors, tex_colors, col4, GL_RGBA32F);
+	create_tbo(tbo_scales, tex_scales, scl4, GL_RGBA32F);
+	create_tbo(tbo_rotations, tex_rotations, splat_rotations, GL_RGBA32F);
+	create_tbo(tbo_opacities, tex_opacities, splat_opacities, GL_R32F);
 
-		glGenBuffers(1, &vbo_indices);
-		glBindBuffer(GL_ARRAY_BUFFER, vbo_indices);
-		glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(n) * GLsizeiptr(sizeof(int)), ptr(splat_indices), GL_DYNAMIC_DRAW);
-		glBindBuffer(GL_ARRAY_BUFFER, 0);
+	glGenBuffers(1, &vbo_indices);
+	glBindBuffer(GL_ARRAY_BUFFER, vbo_indices);
+	glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(n) * GLsizeiptr(sizeof(int)), ptr(splat_indices), GL_DYNAMIC_DRAW);
+	glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-		setup_instance_index_vao(quad1.vao, vbo_indices, /* location = */ 4);
+	setup_instance_index_vao(quad1.vao, vbo_indices, /* location = */ 4);
 
-		// quad1.initialize_supplementary_data_on_gpu(splat_indices,4,1);
-	}
+	GLuint const shader = quad1.shader.id;
+	bind_tbo_to_shader(shader, tex_points, "splat_points_tbo", 1);
+	bind_tbo_to_shader(shader, tex_colors, "splat_colors_tbo", 2);
+	bind_tbo_to_shader(shader, tex_scales, "splat_scales_tbo", 3);
+	bind_tbo_to_shader(shader, tex_rotations, "splat_rotations_tbo", 4);
+	bind_tbo_to_shader(shader, tex_opacities, "splat_opacities_tbo", 5);
+
 
 	std::cout << "End function scene_structure::initialize()" << std::endl;
 
-	environment.background_color = {0, 0, 0};
 }
 
 
@@ -168,66 +173,33 @@ void scene_structure::display_frame()
 	// Update time
 	timer.update();
 
-	// quad1.model.rotation = rotation_transform::from_axis_angle({0,0,1}, timer.t * 0.5f);
-
-	//draw(quad1, environment, splat_points.size());
-
-	// if (gui.display_wireframe) {
-	// 	//draw_wireframe(terrain, environment);
-	// }
-
+	// send alpha_cutoff uniform 
+	environment.uniform_generic.uniform_float["alpha_cutoff"] = gui.alpha_cutoff;
 
 	glEnable(GL_BLEND);
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 	glDepthMask(false);
 
-	if (splat_points.size() > 0){ //&& vbo_indices != 0u) {
-		GLuint const shader = quad1.shader.id;
-		glUseProgram(shader);
-
-		int const u0 = kSplatTboTextureUnitFirst;
-		glActiveTexture(GL_TEXTURE0 + u0 + 0);
-		glBindTexture(GL_TEXTURE_BUFFER, tex_points);
-		glUniform1i(glGetUniformLocation(shader, "splat_points_tbo"), u0 + 0);
-
-		glActiveTexture(GL_TEXTURE0 + u0 + 1);
-		glBindTexture(GL_TEXTURE_BUFFER, tex_colors);
-		glUniform1i(glGetUniformLocation(shader, "splat_colors_tbo"), u0 + 1);
-
-		glActiveTexture(GL_TEXTURE0 + u0 + 2);
-		glBindTexture(GL_TEXTURE_BUFFER, tex_scales);
-		glUniform1i(glGetUniformLocation(shader, "splat_scales_tbo"), u0 + 2);
-
-		glActiveTexture(GL_TEXTURE0 + u0 + 3);
-		glBindTexture(GL_TEXTURE_BUFFER, tex_rotations);
-		glUniform1i(glGetUniformLocation(shader, "splat_rotations_tbo"), u0 + 3);
-
-		glActiveTexture(GL_TEXTURE0 + u0 + 4);
-		glBindTexture(GL_TEXTURE_BUFFER, tex_opacities);
-		glUniform1i(glGetUniformLocation(shader, "splat_opacities_tbo"), u0 + 4);
-
+	if (splat_points.size() > 0){
+		
+		// sort points for alpha blending then send the list of indices to the vbo
 		sortPoints(splat_indices, splat_points, camera_control.camera_model.position());
 		glBindBuffer(GL_ARRAY_BUFFER, vbo_indices);
 		glBufferSubData(GL_ARRAY_BUFFER, 0, GLsizeiptr(splat_indices.size()) * GLsizeiptr(sizeof(int)), ptr(splat_indices));
 		glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-
-		environment.uniform_generic.uniform_float["alpha_cutoff"] = gui.alpha_cutoff;
-
+		// display all the instances of quad
 		draw(quad1, environment, splat_indices.size());
 	}
 
 	glDepthMask(true);
 	glDisable(GL_BLEND);
-
-
 }
 
 
 void scene_structure::display_gui()
 {
 	ImGui::Checkbox("Frame", &gui.display_frame);
-	ImGui::Checkbox("Wireframe", &gui.display_wireframe);
 	ImGui::SliderFloat("Alpha cutoff", &gui.alpha_cutoff, 1e-6f, 1.0f, "%.5f", ImGuiSliderFlags_Logarithmic);
 }
 
@@ -264,6 +236,6 @@ void scene_structure::display_info()
 
 	std::cout << "\nSCENE INFO:" << std::endl;
 	std::cout << "-----------------------------------------------" << std::endl;
-	std::cout << "Example of scene to start a project." << std::endl;
+	std::cout << "Gaussian splat renderer" << std::endl;
 	std::cout << "-----------------------------------------------\n" << std::endl;
 }

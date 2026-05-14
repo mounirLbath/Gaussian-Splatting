@@ -11,7 +11,6 @@ using cgp::mesh_drawable;
 
 struct gui_parameters {
 	bool display_frame = false;
-	bool display_wireframe = false;
 	float alpha_cutoff = 1e-5f;
 };
 

@@ -17,8 +17,6 @@ uniform mat4 projection;
 
 flat out vec3 frag_color;
 flat out float frag_opacity;
-out vec2 frag_delta;
-flat out mat2 inv_sigma2D;
 out vec2 uv;
 
 
@@ -73,7 +71,6 @@ void main()
 
 	mat2 sigma2D = J * sigma_view * transpose(J); // the covariance matrix in NDC coordinates
 
-
 	// compute the quad position in NDC coordinates
 	float a = sigma2D[0][0]; float b = sigma2D[1][1]; float c = sigma2D[0][1];
 	float det = a*b-c*c; 
@@ -95,10 +92,4 @@ void main()
 	screen_position.xy += delta * screen_position.w;
 
 	gl_Position = screen_position;
-
-
-	// compute the inverse of the covariance matrix
-	mat2 sigma2D_safe = sigma2D + 1e-6 * mat2(1.0);
-	inv_sigma2D = inverse(sigma2D_safe);
-	frag_delta = delta;
 }

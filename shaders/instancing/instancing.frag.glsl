@@ -5,9 +5,7 @@ layout(location=0) out vec4 FragColor;
 
 flat in vec3 frag_color;
 flat in float frag_opacity;
-in vec2 frag_delta;
 in vec2 uv;
-flat in mat2 inv_sigma2D;
 
 uniform float alpha_cutoff;
 
