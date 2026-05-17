@@ -532,6 +532,8 @@ void scene_structure::display_gui()
 {
 	ImGui::Checkbox("Frame", &gui.display_frame);
 	ImGui::SliderFloat("Alpha cutoff", &gui.alpha_cutoff, 1e-6f, 1.0f, "%.5f", ImGuiSliderFlags_Logarithmic);
+	ImGui::SliderFloat("Camera speed", &gui.camera_move_speed, 0.1f, 20.0f, "%.1f");
+	ImGui::Text("Move: R/F zoom, Z/W/S vertical, A/Q/Left, D/Right");
 
 	ImGui::Separator();
 	ImGui::Checkbox("GPU pipeline (Phase 1)", &use_gpu_pipeline);
@@ -570,9 +572,41 @@ void scene_structure::keyboard_event()
 {
 	camera_control.action_keyboard();
 }
+void scene_structure::apply_keyboard_camera_navigation()
+{
+	if (ImGui::GetIO().WantCaptureKeyboard)
+		return;
+
+	float const magnitude = gui.camera_move_speed * inputs.time_interval;
+	auto const key_down = [this](int key) {
+		return glfwGetKey(window.glfw_window, key) == GLFW_PRESS;
+	};
+
+	bool const shift_down = key_down(GLFW_KEY_LEFT_SHIFT) || key_down(GLFW_KEY_RIGHT_SHIFT);
+	bool const zoom_in = (!shift_down && key_down(GLFW_KEY_R)) || key_down(GLFW_KEY_UP);
+	bool const zoom_out = (!shift_down && key_down(GLFW_KEY_F)) || key_down(GLFW_KEY_DOWN);
+	bool const move_up = key_down(GLFW_KEY_Z) || key_down(GLFW_KEY_W);
+	bool const move_down = key_down(GLFW_KEY_S);
+	bool const move_left = key_down(GLFW_KEY_A) || key_down(GLFW_KEY_Q) || (!shift_down && key_down(GLFW_KEY_LEFT));
+	bool const move_right = key_down(GLFW_KEY_D) || (!shift_down && key_down(GLFW_KEY_RIGHT));
+
+	if (zoom_in)
+		camera_control.camera_model.manipulator_translate_front(-magnitude);
+	if (zoom_out)
+		camera_control.camera_model.manipulator_translate_front(magnitude);
+	if (move_up)
+		camera_control.camera_model.manipulator_translate_in_plane({ 0.0f, -magnitude });
+	if (move_down)
+		camera_control.camera_model.manipulator_translate_in_plane({ 0.0f, magnitude });
+	if (move_left)
+		camera_control.camera_model.manipulator_translate_in_plane({ magnitude, 0.0f });
+	if (move_right)
+		camera_control.camera_model.manipulator_translate_in_plane({ -magnitude, 0.0f });
+}
 void scene_structure::idle_frame()
 {
 	camera_control.idle_frame();
+	apply_keyboard_camera_navigation();
 	
 }
 
@@ -581,6 +615,8 @@ void scene_structure::display_info()
 	std::cout << "\nCAMERA CONTROL:" << std::endl;
 	std::cout << "-----------------------------------------------" << std::endl;
 	std::cout << camera_control.doc_usage() << std::endl;
+	std::cout << "  Keyboard navigation: R/Up zoom in, F/Down zoom out, Z/W up, S down, A/Q/Left left, D/Right right." << std::endl;
+	std::cout << "  Use the GUI Camera speed slider to adjust movement speed." << std::endl;
 	std::cout << "-----------------------------------------------\n" << std::endl;
 
 

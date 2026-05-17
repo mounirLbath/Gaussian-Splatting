@@ -12,6 +12,7 @@ using cgp::mesh_drawable;
 struct gui_parameters {
 	bool display_frame = false;
 	float alpha_cutoff = 0.004f;
+	float camera_move_speed = 3.0f;
 	bool show_profiler = true;
 };
 
@@ -167,6 +168,7 @@ struct scene_structure : cgp::scene_inputs_generic {
 	void mouse_click_event();
 	void keyboard_event();
 	void idle_frame();
+	void apply_keyboard_camera_navigation();
 
 };
 
