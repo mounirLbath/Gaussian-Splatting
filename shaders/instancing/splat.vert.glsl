@@ -12,7 +12,7 @@ struct SplatRecord {
     vec4 center_axis1;   // xy = NDC center, zw = ellipse axis 1 in NDC
     vec4 axis2_aabb;     // xy = ellipse axis 2 in NDC, zw = NDC AABB half-extent
     vec4 color_opacity;  // rgb = color, a = opacity
-    uvec4 packed;        // x = depth_key, y = view_depth bits, z = visible, w = pad
+    uvec4 packed_data;   // x = depth_key, y = view_depth bits, z = visible, w = pad
 };
 
 layout(std430, binding = 5) readonly buffer SplatViewData  { SplatRecord data[]; } view_data;
@@ -41,7 +41,7 @@ void main()
     // The fragment's Mahalanobis falloff is exp(-0.5 * dot(uv,uv)). To match the
     // original visual semantics, |uv| at the quad edge must equal the per-splat
     // spread (which was derived from alpha_cutoff/opacity in the compute shader).
-    float spread = uintBitsToFloat(rec.packed.w);
+    float spread = uintBitsToFloat(rec.packed_data.w);
     uv = quad_position * spread;
 
     gl_Position = vec4(ndc, 0.0, 1.0);

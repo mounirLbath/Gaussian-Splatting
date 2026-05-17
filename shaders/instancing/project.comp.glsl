@@ -24,7 +24,7 @@ struct SplatRecord {
     vec4 center_axis1;   // xy = NDC center, zw = ellipse axis 1 in NDC
     vec4 axis2_aabb;     // xy = ellipse axis 2 in NDC, zw = NDC half-extent (rx, ry)
     vec4 color_opacity;  // rgb = color, a = opacity
-    uvec4 packed;        // x = depth_key (float-flipped), y = floatBitsToUint(view_depth), z = visible, w = pad
+    uvec4 packed_data;   // x = depth_key (float-flipped), y = floatBitsToUint(view_depth), z = visible, w = pad
 };
 
 layout(std430, binding = 5) writeonly buffer SplatViewData    { SplatRecord data[]; } view_data;
@@ -81,7 +81,7 @@ void main()
     rec.center_axis1  = vec4(0.0);
     rec.axis2_aabb    = vec4(0.0);
     rec.color_opacity = vec4(instance_color, instance_opacity);
-    rec.packed = uvec4(0u, floatBitsToUint(-view_center.z), 0u, 0u);
+    rec.packed_data = uvec4(0u, floatBitsToUint(-view_center.z), 0u, 0u);
 
     // Reject splats behind the near plane.
     // view_center.z is negative when in front of the camera in standard right-handed view space.
@@ -158,9 +158,9 @@ void main()
     // Visible. Fill record and append to the visible list.
     rec.center_axis1 = vec4(ndc_center, axis1_ndc);
     rec.axis2_aabb   = vec4(axis2_ndc, rx, ry);
-    rec.packed.x = depth_to_key(-view_center.z); // larger key -> farther
-    rec.packed.z = 1u;
-    rec.packed.w = floatBitsToUint(spread); // pass per-splat spread to the vertex shader
+    rec.packed_data.x = depth_to_key(-view_center.z); // larger key -> farther
+    rec.packed_data.z = 1u;
+    rec.packed_data.w = floatBitsToUint(spread); // pass per-splat spread to the vertex shader
 
     view_data.data[i] = rec;
 

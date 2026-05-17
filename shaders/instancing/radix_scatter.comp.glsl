@@ -15,7 +15,7 @@ struct SplatRecord {
     vec4 center_axis1;
     vec4 axis2_aabb;
     vec4 color_opacity;
-    uvec4 packed;
+    uvec4 packed_data;
 };
 layout(std430, binding = 5) readonly buffer SplatViewData { SplatRecord data[]; } view_data;
 
@@ -51,7 +51,7 @@ void main()
         uint dst = local_id + i * 256u;
         if (idx < block_end) {
             uint splat_id = sort_in.data[idx];
-            uint key = ~view_data.data[splat_id].packed.x; // invert for back-to-front order
+                uint key = ~view_data.data[splat_id].packed_data.x; // invert for back-to-front order
             uint bin = (key >> pass_shift) & 0xFFu;
             sh_ids[dst] = splat_id;
             sh_bins[dst] = bin;
