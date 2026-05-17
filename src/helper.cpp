@@ -180,6 +180,99 @@ void sortPoints(cgp::numarray<int>& indices, const cgp::numarray<cgp::vec3>& poi
 }
 
 
+// ---------------------------------------------------------------------------
+// Compute / graphics shader loading helpers (Phase 1).
+// ---------------------------------------------------------------------------
+namespace {
+std::string read_file_text(std::string const& path)
+{
+    std::ifstream f(path, std::ios::in | std::ios::binary);
+    if (!f.is_open()) {
+        std::cerr << "[shader] Cannot open " << path << std::endl;
+        return {};
+    }
+    std::string out;
+    f.seekg(0, std::ios::end);
+    out.resize(static_cast<size_t>(f.tellg()));
+    f.seekg(0, std::ios::beg);
+    f.read(out.data(), out.size());
+    return out;
+}
+
+GLuint compile_one(GLenum stage, std::string const& src, char const* tag)
+{
+    GLuint id = glCreateShader(stage);
+    char const* p = src.c_str();
+    glShaderSource(id, 1, &p, nullptr);
+    glCompileShader(id);
+    GLint ok = 0;
+    glGetShaderiv(id, GL_COMPILE_STATUS, &ok);
+    if (!ok) {
+        GLint len = 0;
+        glGetShaderiv(id, GL_INFO_LOG_LENGTH, &len);
+        std::vector<char> log(static_cast<size_t>(len) + 1);
+        glGetShaderInfoLog(id, len, &len, log.data());
+        std::cerr << "[shader] Compile error in " << tag << ":\n" << log.data() << std::endl;
+        glDeleteShader(id);
+        return 0;
+    }
+    return id;
+}
+
+GLuint link_program(std::vector<GLuint> const& shaders)
+{
+    GLuint prog = glCreateProgram();
+    for (GLuint s : shaders) glAttachShader(prog, s);
+    glLinkProgram(prog);
+    GLint ok = 0;
+    glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+    if (!ok) {
+        GLint len = 0;
+        glGetProgramiv(prog, GL_INFO_LOG_LENGTH, &len);
+        std::vector<char> log(static_cast<size_t>(len) + 1);
+        glGetProgramInfoLog(prog, len, &len, log.data());
+        std::cerr << "[shader] Link error:\n" << log.data() << std::endl;
+        glDeleteProgram(prog);
+        for (GLuint s : shaders) glDeleteShader(s);
+        return 0;
+    }
+    for (GLuint s : shaders) {
+        glDetachShader(prog, s);
+        glDeleteShader(s);
+    }
+    return prog;
+}
+} // namespace
+
+GLuint load_compute_program(std::string const& path)
+{
+    std::string const src = read_file_text(path);
+    if (src.empty()) return 0;
+    GLuint cs = compile_one(GL_COMPUTE_SHADER, src, path.c_str());
+    if (!cs) return 0;
+    GLuint const prog = link_program({cs});
+    if (prog) std::cout << "  [info] Compute shader compiled successfully [ID=" << prog << "] (" << path << ")" << std::endl;
+    return prog;
+}
+
+GLuint load_graphics_program(std::string const& vert_path, std::string const& frag_path)
+{
+    std::string const vsrc = read_file_text(vert_path);
+    std::string const fsrc = read_file_text(frag_path);
+    if (vsrc.empty() || fsrc.empty()) return 0;
+    GLuint vs = compile_one(GL_VERTEX_SHADER,   vsrc, vert_path.c_str());
+    GLuint fs = compile_one(GL_FRAGMENT_SHADER, fsrc, frag_path.c_str());
+    if (!vs || !fs) {
+        if (vs) glDeleteShader(vs);
+        if (fs) glDeleteShader(fs);
+        return 0;
+    }
+    GLuint const prog = link_program({vs, fs});
+    if (prog) std::cout << "  [info] Graphics shader compiled successfully [ID=" << prog << "] (" << vert_path << ", " << frag_path << ")" << std::endl;
+    return prog;
+}
+
+
 void compute_covariances_from_scales_and_rotations(
     cgp::numarray<cgp::vec3> const& scales,
     cgp::numarray<cgp::vec4> const& rotations,

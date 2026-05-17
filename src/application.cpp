@@ -3,23 +3,7 @@
 
 #include <stdexcept>
 
-#ifdef __EMSCRIPTEN__
-#include <emscripten/emscripten.h>
-#endif
-
 using namespace cgp;
-
-namespace {
-
-#ifdef __EMSCRIPTEN__
-void emscripten_main_loop(void* arg)
-{
-    // EMScripten trampoline expects a C callback; forward to member routine.
-    static_cast<application_structure*>(arg)->animation_loop();
-}
-#endif
-
-} // namespace
 
 scene_structure& application_structure::scene()
 {
@@ -58,7 +42,6 @@ void application_structure::start_loop()
     std::cout << "Start animation loop ..." << std::endl;
     fps_record_.start();
 
-#ifndef __EMSCRIPTEN__
     double lasttime = glfwGetTime();
     while (!glfwWindowShouldClose(scene().window.glfw_window)) {
         animation_loop();
@@ -71,9 +54,6 @@ void application_structure::start_loop()
     }
     std::cout << "\nAnimation loop stopped" << std::endl;
     cleanup();
-#else
-    emscripten_set_main_loop_arg(emscripten_main_loop, this, 0, 1);
-#endif
 }
 
 void application_structure::initialize_window()
@@ -100,6 +80,9 @@ void application_structure::initialize_window()
 
     cgp::imgui_init(s.window.glfw_window);
     glfwSetWindowUserPointer(s.window.glfw_window, this);
+
+    // Apply the configured vsync default (CGP enables vsync internally; respect project::vsync).
+    glfwSwapInterval(project::vsync ? 1 : 0);
 
     // Register callbacks so GLFW can route events back to this instance.
     setup_callbacks();
@@ -186,7 +169,6 @@ void application_structure::display_gui_default()
     ImGui::Text("%s", fps_txt.c_str());
     if (ImGui::CollapsingHeader("Window")) {
         ImGui::Indent();
-#ifndef __EMSCRIPTEN__
         bool changed_screen_mode = ImGui::Checkbox("Full Screen", &s.window.is_full_screen);
         if (changed_screen_mode) {
             if (s.window.is_full_screen)
@@ -194,15 +176,12 @@ void application_structure::display_gui_default()
             else
                 s.window.set_windowed_screen();
         }
-#endif
         ImGui::SliderFloat("Gui Scale", &project::gui_scale, 0.5f, 2.5f);
 
-#ifndef __EMSCRIPTEN__
         ImGui::Checkbox("FPS limiting", &project::fps_limiting);
         if (project::fps_limiting) {
             ImGui::SliderFloat("FPS limit", &project::fps_max, 10, 250);
         }
-#endif
         if (ImGui::Checkbox("vsync (screen sync)", &project::vsync)) {
             project::vsync == true ? glfwSwapInterval(1) : glfwSwapInterval(0);
         }

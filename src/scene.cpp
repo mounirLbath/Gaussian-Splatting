@@ -1,7 +1,78 @@
 #include "scene.hpp"
 #include "helper.hpp"
 
+#include <chrono>
+
 using namespace cgp;
+
+namespace {
+// Explicit GL error check used in the Phase 1 GPU pipeline so we can localize
+// which call leaks an error (rather than being caught later by cgp::draw).
+inline void check_gl(char const* tag)
+{
+	GLenum const e = glGetError();
+	if (e != GL_NO_ERROR) {
+		std::cerr << "[gl-error] " << tag << " -> 0x" << std::hex << e << std::dec << std::endl;
+	}
+}
+} // namespace
+
+
+// ---------------------------------------------------------------------------
+// Phase 0: profiling helpers
+// ---------------------------------------------------------------------------
+
+void gpu_timer_scope::initialize()
+{
+	glGenQueries(2, queries);
+}
+void gpu_timer_scope::destroy()
+{
+	if (queries[0]) glDeleteQueries(2, queries);
+	queries[0] = queries[1] = 0;
+	has_pending = false;
+}
+void gpu_timer_scope::begin()
+{
+	glBeginQuery(GL_TIME_ELAPSED, queries[write_index]);
+}
+void gpu_timer_scope::end()
+{
+	glEndQuery(GL_TIME_ELAPSED);
+	has_pending = true;
+}
+void gpu_timer_scope::resolve()
+{
+	// Read the OTHER buffer (last frame's result) so we never stall.
+	int const read_index = 1 - write_index;
+	GLint available = 0;
+	glGetQueryObjectiv(queries[read_index], GL_QUERY_RESULT_AVAILABLE, &available);
+	if (available) {
+		GLuint64 ns = 0;
+		glGetQueryObjectui64v(queries[read_index], GL_QUERY_RESULT, &ns);
+		last_ms = double(ns) * 1.0e-6;
+	}
+	write_index = read_index;
+}
+
+void frame_profiler::initialize()
+{
+	gpu_project.initialize();
+	gpu_sort.initialize();
+	gpu_draw.initialize();
+}
+void frame_profiler::destroy()
+{
+	gpu_project.destroy();
+	gpu_sort.destroy();
+	gpu_draw.destroy();
+}
+void frame_profiler::resolve_all()
+{
+	gpu_project.resolve();
+	gpu_sort.resolve();
+	gpu_draw.resolve();
+}
 
 namespace {
 
@@ -48,6 +119,45 @@ void setup_instance_index_vao(GLuint vao, GLuint index_vbo, int location)
 	glEnableVertexAttribArray(location);
 	glBindVertexArray(0);
 }
+
+
+// Phase 1: set up a minimal unit-quad VAO/VBO/EBO used by the GPU pipeline.
+//   - location 0: vec2 in [-1, 1]^2
+//   - 6 indices for two triangles
+void create_unit_quad(GLuint& vao, GLuint& vbo, GLuint& ebo)
+{
+	float const verts[8] = {
+		-1.f, -1.f,
+		 1.f, -1.f,
+		 1.f,  1.f,
+		-1.f,  1.f,
+	};
+	unsigned int const idx[6] = { 0u, 1u, 2u, 0u, 2u, 3u };
+
+	glGenVertexArrays(1, &vao);
+	glGenBuffers(1, &vbo);
+	glGenBuffers(1, &ebo);
+
+	glBindVertexArray(vao);
+
+	glBindBuffer(GL_ARRAY_BUFFER, vbo);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
+	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
+	glEnableVertexAttribArray(0);
+
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+	glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(idx), idx, GL_STATIC_DRAW);
+
+	glBindVertexArray(0);
+}
+
+struct DrawElementsIndirectCommand_t {
+	GLuint count;
+	GLuint instanceCount;
+	GLuint firstIndex;
+	GLuint baseVertex;
+	GLuint baseInstance;
+};
 
 } // namespace
 
@@ -140,6 +250,57 @@ void scene_structure::initialize()
 	bind_ssbo(ssbo_opacities, 3);
 
 
+	// =======================================================================
+	// Phase 1: GPU projection + visibility + indirect draw
+	// =======================================================================
+	{
+		// Per-splat record: 3 vec4 + 1 uvec4 = 64 bytes. Match the layout in project.comp.glsl.
+		size_t const record_bytes = 4u * sizeof(float) * 4u; // 4 vec4 (last is uvec4)
+		glGenBuffers(1, &ssbo_view_data);
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_view_data);
+		glBufferData(GL_SHADER_STORAGE_BUFFER,
+			GLsizeiptr(n) * GLsizeiptr(record_bytes),
+			nullptr, GL_DYNAMIC_DRAW);
+
+		glGenBuffers(1, &ssbo_visible_indices);
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_visible_indices);
+		glBufferData(GL_SHADER_STORAGE_BUFFER,
+			GLsizeiptr(n) * GLsizeiptr(sizeof(GLuint)),
+			nullptr, GL_DYNAMIC_DRAW);
+
+		glGenBuffers(1, &ssbo_indirect_draw);
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_indirect_draw);
+		DrawElementsIndirectCommand_t const cmd0 = { 6u, 0u, 0u, 0u, 0u };
+		glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(cmd0), &cmd0, GL_DYNAMIC_DRAW);
+
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+		// Bind to compute-shader binding points.
+		bind_ssbo(ssbo_view_data,       5);
+		bind_ssbo(ssbo_visible_indices, 6);
+		bind_ssbo(ssbo_indirect_draw,   8);
+
+		// Programs.
+		program_project = load_compute_program(project::path + "shaders/instancing/project.comp.glsl");
+		program_splat   = load_graphics_program(
+			project::path + "shaders/instancing/splat.vert.glsl",
+			project::path + "shaders/instancing/splat.frag.glsl");
+		assert_cgp(program_project != 0, "Failed to load project.comp.glsl");
+		assert_cgp(program_splat   != 0, "Failed to load splat.vert.glsl/splat.frag.glsl");
+
+		// Quad geometry for the GPU draw path.
+		create_unit_quad(quad_vao, quad_vbo, quad_ebo);
+
+		// Profiler.
+		profiler.initialize();
+		profiler.splat_count = n;
+
+		// Drain any leftover GL error from setup so the per-frame opengl_check macros
+		// inside cgp::draw don't fire on a stale error from init.
+		while (glGetError() != GL_NO_ERROR) {}
+	}
+
+
 	std::cout << "End function scene_structure::initialize()" << std::endl;
 
 }
@@ -151,6 +312,10 @@ void scene_structure::initialize()
 // Note that you should avoid having costly computation and large allocation defined there. This function is mostly used to call the draw() functions on pre-existing data.
 void scene_structure::display_frame()
 {
+	// Drain stale GL errors at frame start so localized check_gl() calls and CGP's
+	// opengl_check macro inside cgp::draw report only this frame's errors.
+	while (glGetError() != GL_NO_ERROR) {}
+
 	// Set the light to the current position of the camera
     camera_projection.aspect_ratio = window.aspect_ratio();
 	environment.camera_projection = camera_projection.matrix();
@@ -171,17 +336,94 @@ void scene_structure::display_frame()
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 	glDepthMask(false);
 
-	if (splat_points.size() > 0){
-		
-		// sort points for alpha blending then send the list of indices to the vbo
-		sortPoints(splat_indices, splat_points, camera_control.camera_model.position());
-		glBindBuffer(GL_ARRAY_BUFFER, vbo_indices);
-		glBufferSubData(GL_ARRAY_BUFFER, 0, GLsizeiptr(splat_indices.size()) * GLsizeiptr(sizeof(int)), ptr(splat_indices));
-		glBindBuffer(GL_ARRAY_BUFFER, 0);
+	int const n = splat_points.size();
+	if (n > 0) {
+		if (use_gpu_pipeline) {
+			// ---------------- Phase 1: GPU pipeline ----------------
+			// Drain any prior pending error so localized checks below are meaningful.
+			(void)glGetError();
 
-		// display all the instances of quad
-		draw(quad1, environment, splat_indices.size());
+			// 1) Reset the indirect-draw command (instanceCount==0 acts as the atomic counter).
+			glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_indirect_draw);
+			DrawElementsIndirectCommand_t const cmd0 = { 6u, 0u, 0u, 0u, 0u };
+			glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(cmd0), &cmd0);
+			glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+			check_gl("reset indirect cmd");
+
+			// 2) Run the projection compute shader.
+			profiler.gpu_project.begin();
+			glUseProgram(program_project);                           check_gl("useProgram project");
+			bind_ssbo(ssbo_points,          0);
+			bind_ssbo(ssbo_colors,          1);
+			bind_ssbo(ssbo_covariances,     2);
+			bind_ssbo(ssbo_opacities,       3);
+			bind_ssbo(ssbo_view_data,       5);
+			bind_ssbo(ssbo_visible_indices, 6);
+			bind_ssbo(ssbo_indirect_draw,   8);
+			check_gl("bind ssbos");
+			// CGP stores matrices row-major in memory, so transpose=GL_TRUE.
+			glUniformMatrix4fv(glGetUniformLocation(program_project, "view"),       1, GL_TRUE, ptr(environment.camera_view));
+			glUniformMatrix4fv(glGetUniformLocation(program_project, "projection"), 1, GL_TRUE, ptr(environment.camera_projection));
+			glUniform1f (glGetUniformLocation(program_project, "alpha_cutoff"), gui.alpha_cutoff);
+			glUniform1ui(glGetUniformLocation(program_project, "splat_count"), GLuint(n));
+			check_gl("compute uniforms");
+
+			GLuint const groups = (GLuint(n) + 255u) / 256u;
+			glDispatchCompute(groups, 1u, 1u);                       check_gl("dispatchCompute");
+			glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_COMMAND_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+			check_gl("memoryBarrier");
+			profiler.gpu_project.end();
+
+			// 3) Indirect draw of the quad, instanceCount = visible count.
+			profiler.gpu_draw.begin();
+			glUseProgram(program_splat);                              check_gl("useProgram splat");
+			glUniform1f(glGetUniformLocation(program_splat, "alpha_cutoff"), gui.alpha_cutoff);
+			bind_ssbo(ssbo_view_data,       5);
+			bind_ssbo(ssbo_visible_indices, 6);
+			check_gl("splat uniforms+ssbos");
+
+			glBindVertexArray(quad_vao);                              check_gl("bindVertexArray");
+			glBindBuffer(GL_DRAW_INDIRECT_BUFFER, ssbo_indirect_draw); check_gl("bind DRAW_INDIRECT");
+			glDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_INT, nullptr); check_gl("drawElementsIndirect");
+			glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
+			glBindVertexArray(0);
+			glUseProgram(0);
+			profiler.gpu_draw.end();
+			check_gl("end gpu draw");
+
+			// 4) Read back the visible count for the GUI (instanceCount slot of the indirect cmd).
+			DrawElementsIndirectCommand_t cmd_back{};
+			glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_indirect_draw);
+			glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(cmd_back), &cmd_back);
+			glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+			profiler.visible_count = int(cmd_back.instanceCount);
+			profiler.splat_count   = n;
+			check_gl("readback");
+		}
+		else {
+			// ---------------- Legacy CPU path ----------------
+			auto const t0 = std::chrono::high_resolution_clock::now();
+			sortPoints(splat_indices, splat_points, camera_control.camera_model.position());
+			auto const t1 = std::chrono::high_resolution_clock::now();
+			glBindBuffer(GL_ARRAY_BUFFER, vbo_indices);
+			glBufferSubData(GL_ARRAY_BUFFER, 0, GLsizeiptr(splat_indices.size()) * GLsizeiptr(sizeof(int)), ptr(splat_indices));
+			glBindBuffer(GL_ARRAY_BUFFER, 0);
+			auto const t2 = std::chrono::high_resolution_clock::now();
+
+			profiler.cpu_sort_ms   = std::chrono::duration<double, std::milli>(t1 - t0).count();
+			profiler.cpu_upload_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
+
+			profiler.gpu_draw.begin();
+			draw(quad1, environment, splat_indices.size());
+			profiler.gpu_draw.end();
+
+			profiler.visible_count = n;
+			profiler.splat_count   = n;
+		}
 	}
+
+	// Resolve double-buffered GPU timer queries (fetch the previous frame's results).
+	profiler.resolve_all();
 
 	glDepthMask(true);
 	glDisable(GL_BLEND);
@@ -192,6 +434,24 @@ void scene_structure::display_gui()
 {
 	ImGui::Checkbox("Frame", &gui.display_frame);
 	ImGui::SliderFloat("Alpha cutoff", &gui.alpha_cutoff, 1e-6f, 1.0f, "%.5f", ImGuiSliderFlags_Logarithmic);
+
+	ImGui::Separator();
+	ImGui::Checkbox("GPU pipeline (Phase 1)", &use_gpu_pipeline);
+	ImGui::Checkbox("Show profiler", &gui.show_profiler);
+
+	if (gui.show_profiler) {
+		ImGui::Text("Splats:    %d", profiler.splat_count);
+		ImGui::Text("Visible:   %d", profiler.visible_count);
+		ImGui::Separator();
+		if (use_gpu_pipeline) {
+			ImGui::Text("GPU project:  %.3f ms", profiler.gpu_project.last_ms);
+			ImGui::Text("GPU draw:     %.3f ms", profiler.gpu_draw.last_ms);
+		} else {
+			ImGui::Text("CPU sort:     %.3f ms", profiler.cpu_sort_ms);
+			ImGui::Text("CPU upload:   %.3f ms", profiler.cpu_upload_ms);
+			ImGui::Text("GPU draw:     %.3f ms", profiler.gpu_draw.last_ms);
+		}
+	}
 }
 
 
