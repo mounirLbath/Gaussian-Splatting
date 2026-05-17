@@ -134,6 +134,18 @@ struct scene_structure : cgp::scene_inputs_generic {
 	// GPU programs
 	GLuint program_project = 0;       // compute shader
 	GLuint program_splat = 0;         // graphics program (vert + frag) for the thin instancing path
+	GLuint program_radix_histogram = 0;
+	GLuint program_radix_block_prefix = 0;
+	GLuint program_radix_bin_prefix = 0;
+	GLuint program_radix_scatter = 0;
+
+	// Phase 2: GPU radix sort buffers
+	GLuint ssbo_sort_a = 0;           // ping-pong buffer A for visible indices
+	GLuint ssbo_sort_b = 0;           // ping-pong buffer B for visible indices
+	GLuint ssbo_radix_hist = 0;       // block histograms / block prefixes (block_count * 256)
+	GLuint ssbo_radix_bins = 0;       // per-bin totals / base offsets (256)
+	GLuint radix_block_count_max = 0; // max block count for allocation
+	static constexpr GLuint radix_block_size = 1024u; // 256 threads * 4 items
 
 	// Quad geometry for the splat draw (replaces the cgp mesh_drawable path)
 	GLuint quad_vao = 0;
@@ -142,7 +154,7 @@ struct scene_structure : cgp::scene_inputs_generic {
 
 	// Toggles. Default OFF until Phase 2 lands the GPU sort -- the GPU path currently
 	// draws splats in atomic-append order so blending is wrong on heavy alpha overlap.
-	bool use_gpu_pipeline = false;    // false = legacy CPU sort + cgp::draw path
+	bool use_gpu_pipeline = true;    // true = GPU sort + indirect draw path
 
 	// Profiler
 	frame_profiler profiler;

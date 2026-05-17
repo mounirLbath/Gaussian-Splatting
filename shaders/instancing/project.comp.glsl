@@ -127,7 +127,8 @@ void main()
     // Closed-form max evaluation radius (in standard-deviation units) so that
     //   opacity * exp(-0.5 * r^2) >= alpha_cutoff
     // This is the same cutoff used by the fragment shader, just hoisted -> non-lossy.
-    float ratio = alpha_cutoff / max(instance_opacity, 1e-8);
+    float cutoff_for_bounds = max(alpha_cutoff, 1e-6);
+    float ratio = cutoff_for_bounds / max(instance_opacity, 1e-8);
     float spread = (ratio < 1.0) ? sqrt(-2.0 * log(ratio)) : 0.0;
 
     if (spread <= 0.0) {
