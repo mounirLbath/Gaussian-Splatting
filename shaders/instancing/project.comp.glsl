@@ -46,6 +46,7 @@ uniform mat4 view;
 uniform mat4 projection;
 uniform float alpha_cutoff;
 uniform uint  splat_count;
+uniform uint  depth_key_bits;
 
 // Float-flip: turn a 32-bit float into a 32-bit unsigned integer so that
 // numerical order on the unsigned interpretation matches the float order.
@@ -60,6 +61,13 @@ uint depth_to_key(float d)
     // Flip sign bit if positive, flip all bits if negative -> monotonic in float order.
     uint mask = (u & 0x80000000u) != 0u ? 0xFFFFFFFFu : 0x80000000u;
     return u ^ mask;
+}
+
+uint quantize_key(uint key)
+{
+    uint bits = clamp(depth_key_bits, 8u, 32u);
+    uint drop = 32u - bits;
+    return drop == 0u ? key : (key >> drop);
 }
 
 void main()
@@ -158,7 +166,7 @@ void main()
     // Visible. Fill record and append to the visible list.
     rec.center_axis1 = vec4(ndc_center, axis1_ndc);
     rec.axis2_aabb   = vec4(axis2_ndc, rx, ry);
-    rec.packed_data.x = depth_to_key(-view_center.z); // larger key -> farther
+    rec.packed_data.x = quantize_key(depth_to_key(-view_center.z)); // larger key -> farther
     rec.packed_data.z = 1u;
     rec.packed_data.w = floatBitsToUint(spread); // pass per-splat spread to the vertex shader
 

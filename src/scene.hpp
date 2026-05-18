@@ -13,6 +13,7 @@ struct gui_parameters {
 	bool display_frame = false;
 	float alpha_cutoff = 0.004f;
 	float camera_move_speed = 3.0f;
+	int depth_sort_passes = 4;
 	bool show_profiler = true;
 };
 

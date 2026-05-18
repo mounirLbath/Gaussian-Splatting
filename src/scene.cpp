@@ -393,6 +393,8 @@ void scene_structure::display_frame()
 			glUniformMatrix4fv(glGetUniformLocation(program_project, "projection"), 1, GL_TRUE, ptr(environment.camera_projection));
 			glUniform1f (glGetUniformLocation(program_project, "alpha_cutoff"), gui.alpha_cutoff);
 			glUniform1ui(glGetUniformLocation(program_project, "splat_count"), GLuint(n));
+			GLuint const depth_key_bits = GLuint(std::max(2, std::min(4, gui.depth_sort_passes)) * 8);
+			glUniform1ui(glGetUniformLocation(program_project, "depth_key_bits"), depth_key_bits);
 			check_gl("compute uniforms");
 
 			GLuint const groups = (GLuint(n) + 255u) / 256u;
@@ -425,7 +427,8 @@ void scene_structure::display_frame()
 
 				GLuint sort_in = ssbo_sort_a;
 				GLuint sort_out = ssbo_sort_b;
-				for (GLuint pass = 0; pass < 4u; ++pass) {
+				GLuint const pass_count = GLuint(std::max(2, std::min(4, gui.depth_sort_passes)));
+				for (GLuint pass = 0; pass < pass_count; ++pass) {
 					GLuint const shift = pass * 8u;
 
 					// Clear block histograms.
@@ -537,6 +540,11 @@ void scene_structure::display_gui()
 
 	ImGui::Separator();
 	ImGui::Checkbox("GPU pipeline (Phase 1)", &use_gpu_pipeline);
+	char const* depth_pass_labels[] = { "4", "3", "2" };
+	int depth_pass_index = gui.depth_sort_passes == 4 ? 0 : (gui.depth_sort_passes == 3 ? 1 : 2);
+	if (ImGui::Combo("Depth sort passes", &depth_pass_index, depth_pass_labels, 3)) {
+		gui.depth_sort_passes = depth_pass_index == 0 ? 4 : (depth_pass_index == 1 ? 3 : 2);
+	}
 	ImGui::Checkbox("Show profiler", &gui.show_profiler);
 
 	if (gui.show_profiler) {
