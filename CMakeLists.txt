@@ -100,23 +100,8 @@ elseif(WIN32)
     endif()
 endif()
 
-# Emscripten build (usage: mkdir build_em && cd build_em && emcmake cmake .. && emmake make; emrun index.html)
+# Emscripten/WebGL2 path is intentionally dropped: this project requires
+# desktop OpenGL 4.3+ for compute shaders, SSBO atomics, and indirect dispatch.
 if(EMSCRIPTEN)
-    target_compile_definitions(${PROJECT_NAME} PRIVATE CGP_NO_DEBUG)
-    set_target_properties(${PROJECT_NAME} PROPERTIES SUFFIX ".html")
-    target_link_options(${PROJECT_NAME} PRIVATE
-        -sMAX_WEBGL_VERSION=2 -sUSE_GLFW=3 -sALLOW_MEMORY_GROWTH=1
-        --preload-file "${CMAKE_SOURCE_DIR}/shaders/@shaders/"
-    )
-    file(GLOB ASSETS_FILES "${CMAKE_SOURCE_DIR}/assets/*")
-    if(ASSETS_FILES)
-        target_link_options(${PROJECT_NAME} PRIVATE
-            --preload-file "${CMAKE_SOURCE_DIR}/assets/@assets/"
-        )
-    endif()
-    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy
-            "${CMAKE_SOURCE_DIR}/scripts/emscripten/emscripten_template.html"
-            "${CMAKE_BINARY_DIR}/index.html"
-    )
+    message(FATAL_ERROR "Emscripten/WebGL2 is no longer supported. Build with a desktop OpenGL 4.3+ toolchain.")
 endif()
