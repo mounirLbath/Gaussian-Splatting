@@ -17,9 +17,9 @@ namespace {
 	return out;
 }
 
-// Create a SSBO and upload the given array to it.
+// Create a SSBO and upload the given array to it (static data).
 template <typename T>
-void create_ssbo(GLuint& ssbo, numarray<T> const& data)
+void create_static_ssbo(GLuint& ssbo, numarray<T> const& data)
 {
 	if (data.size() <= 0)
 		return;
@@ -37,6 +37,16 @@ void create_ssbo(GLuint& ssbo, numarray<T> const& data)
 void bind_ssbo(GLuint ssbo, GLuint binding_point)
 {
 	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, binding_point, ssbo);
+}
+
+void create_dynamic_ssbo(GLuint& ssbo, size_t count, size_t elem_size)
+{
+	if (count == 0)
+		return;
+	glGenBuffers(1, &ssbo);
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+	glBufferData(GL_SHADER_STORAGE_BUFFER, GLsizeiptr(count) * GLsizeiptr(elem_size), nullptr, GL_DYNAMIC_DRAW);
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 }
 
 void setup_instance_index_vao(GLuint vao, GLuint index_vbo, int location)
@@ -121,10 +131,17 @@ void scene_structure::initialize()
 	// Upload per-splat data to SSBOs. Points and colors are padded to vec4
 	numarray<vec4> const pos4 = pad_vec3_to_vec4(splat_points);
 	numarray<vec4> const col4 = pad_vec3_to_vec4(splat_colors);
-	create_ssbo(ssbo_points, pos4);
-	create_ssbo(ssbo_colors, col4);
-	create_ssbo(ssbo_covariances, splat_covariances);
-	create_ssbo(ssbo_opacities, splat_opacities);
+	create_static_ssbo(ssbo_points, pos4);
+	create_static_ssbo(ssbo_colors, col4);
+	create_static_ssbo(ssbo_covariances, splat_covariances);
+	create_static_ssbo(ssbo_opacities, splat_opacities);
+	create_dynamic_ssbo(ssbo_depth_keys, n, sizeof(unsigned int));
+	create_dynamic_ssbo(ssbo_visible_indices, n, sizeof(unsigned int));
+
+	glGenBuffers(1, &ssbo_visible_counter);
+	glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, ssbo_visible_counter);
+	glBufferData(GL_ATOMIC_COUNTER_BUFFER, sizeof(unsigned int), nullptr, GL_DYNAMIC_DRAW);
+	glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, 0);
 
 	glGenBuffers(1, &vbo_indices);
 	glBindBuffer(GL_ARRAY_BUFFER, vbo_indices);
@@ -138,6 +155,9 @@ void scene_structure::initialize()
 	bind_ssbo(ssbo_colors, 1);
 	bind_ssbo(ssbo_covariances, 2);
 	bind_ssbo(ssbo_opacities, 3);
+	bind_ssbo(ssbo_depth_keys, 4);
+	bind_ssbo(ssbo_visible_indices, 5);
+	glBindBufferBase(GL_ATOMIC_COUNTER_BUFFER, 6, ssbo_visible_counter);
 
 
 	std::cout << "End function scene_structure::initialize()" << std::endl;
@@ -170,6 +190,13 @@ void scene_structure::display_frame()
 	glEnable(GL_BLEND);
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 	glDepthMask(false);
+
+	if (ssbo_visible_counter != 0) {
+		unsigned int zero = 0;
+		glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, ssbo_visible_counter);
+		glBufferSubData(GL_ATOMIC_COUNTER_BUFFER, 0, sizeof(unsigned int), &zero);
+		glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, 0);
+	}
 
 	if (splat_points.size() > 0){
 		

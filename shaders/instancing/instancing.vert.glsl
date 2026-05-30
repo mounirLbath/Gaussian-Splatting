@@ -11,6 +11,9 @@ layout(std430, binding = 1) readonly buffer SplatColors      { vec4  data[]; } s
 layout(std430, binding = 2) readonly buffer SplatCovariances { vec4  data[]; } splat_covariances;
 layout(std430, binding = 3) readonly buffer SplatOpacities   { float data[]; } splat_opacities;
 layout(std430, binding = 4) writeonly buffer SplatDepthKeys  { uint  data[]; } splat_depth_keys;
+layout(std430, binding = 5) writeonly buffer VisibleIndices  { uint  data[]; } visible_indices;
+
+layout(binding = 6, offset = 0) uniform atomic_uint visible_count;
 
 
 uniform mat4 model;
@@ -117,6 +120,11 @@ void main()
 		frag_opacity = 0.0;
 		gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
 		return;
+	}
+
+	if (gl_VertexID == 0) {
+		uint slot = atomicCounterIncrement(visible_count);
+		visible_indices.data[slot] = uint(i);
 	}
 	vec2 delta = axis1_ndc * vertex_position.x + axis2_ndc * vertex_position.y;
 	
