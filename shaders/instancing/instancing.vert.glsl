@@ -10,6 +10,7 @@ layout(std430, binding = 1) readonly buffer SplatColors      { vec4  data[]; } s
 // 2 vec4 per splat: (Sxx, Syy, Szz, Sxy) then (Sxz, Syz, _, _)
 layout(std430, binding = 2) readonly buffer SplatCovariances { vec4  data[]; } splat_covariances;
 layout(std430, binding = 3) readonly buffer SplatOpacities   { float data[]; } splat_opacities;
+layout(std430, binding = 4) writeonly buffer SplatDepthKeys  { uint  data[]; } splat_depth_keys;
 
 
 uniform mat4 model;
@@ -21,6 +22,13 @@ flat out vec3 frag_color;
 flat out float frag_opacity;
 out vec2 uv;
 
+
+uint depth_to_key(float d)
+{
+	uint u = floatBitsToUint(d);
+	uint mask = (u & 0x80000000u) != 0u ? 0xFFFFFFFFu : 0x80000000u;
+	return u ^ mask;
+}
 
 void main()
 {
@@ -39,6 +47,8 @@ void main()
 	// center in world
 	mat4 MV = view * model;
 	vec4 view_center =  MV * vec4(instance_position, 1.0);
+
+	splat_depth_keys.data[i] = depth_to_key(-view_center.z);
 
 	// Early reject splats behind the near plane to avoid unstable projection.
 	if (view_center.z >= -1e-4) {
@@ -85,13 +95,14 @@ void main()
 	}
 
 	// Compute spread based on alpha_cutoff
-	float ratio = alpha_cutoff / max(instance_opacity, 1e-8);
+	float ratio = max(alpha_cutoff, 1e-6) / max(instance_opacity, 1e-8);
 	float spread = (ratio < 1.0) ? sqrt(-2.0 * log(ratio)) : 0.0;
 	if (spread <= 0.0) {
 		frag_opacity = 0.0;
 		gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
 		return;
 	}
+	spread = min(spread, 100.0); // clamp spread to avoid numerical issues with very small alpha_cutoff
 	vec2 axis1_ndc = spread * sqrt(lambda1) * dir1;
 	vec2 axis2_ndc = spread * sqrt(lambda2) * dir2;
 
