@@ -15,6 +15,7 @@ layout(std430, binding = 3) readonly buffer SplatOpacities   { float data[]; } s
 uniform mat4 model;
 uniform mat4 view;
 uniform mat4 projection;
+uniform float alpha_cutoff;
 
 flat out vec3 frag_color;
 flat out float frag_opacity;
@@ -76,7 +77,21 @@ void main()
 	vec2 dir1 = vec2((lambda1-b), c); dir1 = normalize(dir1);
 	vec2 dir2 = vec2(-dir1.y, dir1.x); 
 	
-	float spread = 2.0;
+	// Early reject splats that are too transparent 
+	if (instance_opacity <= 1e-8) {
+		frag_opacity = 0.0;
+		gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+		return;
+	}
+
+	// Compute spread based on alpha_cutoff
+	float ratio = alpha_cutoff / max(instance_opacity, 1e-8);
+	float spread = (ratio < 1.0) ? sqrt(-2.0 * log(ratio)) : 0.0;
+	if (spread <= 0.0) {
+		frag_opacity = 0.0;
+		gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+		return;
+	}
 	vec2 axis1_ndc = spread * sqrt(lambda1) * dir1;
 	vec2 axis2_ndc = spread * sqrt(lambda2) * dir2;
 
