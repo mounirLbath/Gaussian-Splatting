@@ -12,6 +12,7 @@ using cgp::mesh_drawable;
 struct gui_parameters {
 	bool display_frame = false;
 	float alpha_cutoff = 0.004f;
+	int depth_bits = 32;
 };
 
 

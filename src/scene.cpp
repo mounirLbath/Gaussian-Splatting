@@ -186,6 +186,7 @@ void scene_structure::display_frame()
 
 	// send alpha_cutoff uniform 
 	environment.uniform_generic.uniform_float["alpha_cutoff"] = gui.alpha_cutoff;
+	environment.uniform_generic.uniform_int["depth_bits"] = gui.depth_bits;
 
 	glEnable(GL_BLEND);
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -219,6 +220,11 @@ void scene_structure::display_gui()
 {
 	ImGui::Checkbox("Frame", &gui.display_frame);
 	ImGui::SliderFloat("Alpha cutoff", &gui.alpha_cutoff, 1e-6f, 1.0f, "%.5f", ImGuiSliderFlags_Logarithmic);
+	const char* depth_labels[] = { "16", "24", "32" };
+	int depth_index = (gui.depth_bits == 16) ? 0 : (gui.depth_bits == 24) ? 1 : 2;
+	if (ImGui::Combo("Depth bits", &depth_index, depth_labels, 3)) {
+		gui.depth_bits = (depth_index == 0) ? 16 : (depth_index == 1) ? 24 : 32;
+	}
 }
 
 
