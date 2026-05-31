@@ -136,12 +136,12 @@ void scene_structure::initialize()
 	create_static_ssbo(ssbo_covariances, splat_covariances);
 	create_static_ssbo(ssbo_opacities, splat_opacities);
 	create_dynamic_ssbo(ssbo_depth_keys, n, sizeof(unsigned int));
-	create_dynamic_ssbo(ssbo_visible_indices, n, sizeof(unsigned int));
 	create_dynamic_ssbo(ssbo_sort_ping, n, sizeof(unsigned int) * 2u);
 	create_dynamic_ssbo(ssbo_sort_pong, n, sizeof(unsigned int) * 2u);
 	create_dynamic_ssbo(ssbo_radix_hist, 256, sizeof(unsigned int));
 	create_dynamic_ssbo(ssbo_radix_prefix, 256, sizeof(unsigned int));
 	create_dynamic_ssbo(ssbo_indirect_draw, 5, sizeof(unsigned int));
+
 
 	glGenBuffers(1, &ssbo_visible_counter);
 	glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, ssbo_visible_counter);
@@ -161,8 +161,8 @@ void scene_structure::initialize()
 	bind_ssbo(ssbo_covariances, 2);
 	bind_ssbo(ssbo_opacities, 3);
 	bind_ssbo(ssbo_depth_keys, 4);
-	bind_ssbo(ssbo_visible_indices, 5);
-	glBindBufferBase(GL_ATOMIC_COUNTER_BUFFER, 6, ssbo_visible_counter);
+	glBindBufferBase(GL_ATOMIC_COUNTER_BUFFER, 5, ssbo_visible_counter);
+	bind_ssbo(ssbo_sort_ping, 6);
 
 
 	std::cout << "End function scene_structure::initialize()" << std::endl;

@@ -77,7 +77,6 @@ struct scene_structure : cgp::scene_inputs_generic {
 	GLuint ssbo_covariances = 0;
 	GLuint ssbo_opacities = 0;
 	GLuint ssbo_depth_keys = 0;
-	GLuint ssbo_visible_indices = 0;
 	GLuint ssbo_visible_counter = 0;
 	GLuint ssbo_sort_ping = 0;
 	GLuint ssbo_sort_pong = 0;

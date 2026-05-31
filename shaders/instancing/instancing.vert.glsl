@@ -11,15 +11,21 @@ layout(std430, binding = 1) readonly buffer SplatColors      { vec4  data[]; } s
 layout(std430, binding = 2) readonly buffer SplatCovariances { vec4  data[]; } splat_covariances;
 layout(std430, binding = 3) readonly buffer SplatOpacities   { float data[]; } splat_opacities;
 layout(std430, binding = 4) writeonly buffer SplatDepthKeys  { uint  data[]; } splat_depth_keys;
-layout(std430, binding = 5) writeonly buffer VisibleIndices  { uint  data[]; } visible_indices;
 
-layout(binding = 6, offset = 0) uniform atomic_uint visible_count;
+struct SortPair {
+	uint key;
+	uint index;
+};
+layout(std430, binding = 6) writeonly buffer SortPairs { SortPair data[]; } sort_pairs;
+
+layout(binding = 5, offset = 0) uniform atomic_uint visible_count;
 
 
 uniform mat4 model;
 uniform mat4 view;
 uniform mat4 projection;
 uniform float alpha_cutoff;
+uniform int depth_bits;
 
 flat out vec3 frag_color;
 flat out float frag_opacity;
@@ -122,9 +128,15 @@ void main()
 		return;
 	}
 
+	// Only add visibility for the splat for the 1st vertex of the quad
 	if (gl_VertexID == 0) {
 		uint slot = atomicCounterIncrement(visible_count);
-		visible_indices.data[slot] = uint(i);
+		uint key = depth_to_key(-view_center.z);
+		if (depth_bits < 32) {
+			key >>= (32u - uint(depth_bits));
+		}
+		sort_pairs.data[slot].key = key;
+		sort_pairs.data[slot].index = uint(i);
 	}
 	vec2 delta = axis1_ndc * vertex_position.x + axis2_ndc * vertex_position.y;
 	
