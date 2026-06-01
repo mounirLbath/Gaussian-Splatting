@@ -83,6 +83,7 @@ struct scene_structure : cgp::scene_inputs_generic {
 	GLuint ssbo_radix_hist = 0;
 	GLuint ssbo_radix_prefix = 0;
 	GLuint ssbo_indirect_draw = 0;
+	GLuint compute_radix_program = 0;
 
 	GLuint vbo_indices = 0;
 	cgp::numarray<int> splat_indices;

@@ -26,11 +26,11 @@ uniform mat4 view;
 uniform mat4 projection;
 uniform float alpha_cutoff;
 uniform int depth_bits;
+uniform int prepass_only;
 
 flat out vec3 frag_color;
 flat out float frag_opacity;
 out vec2 uv;
-
 
 uint depth_to_key(float d)
 {
@@ -41,23 +41,19 @@ uint depth_to_key(float d)
 
 void main()
 {
-	int i = int(instance_idx);
+	int i = prepass_only != 0 ? gl_InstanceID : int(instance_idx);
 	vec3  instance_position = splat_points.data[i].xyz;
 	vec3  instance_color = splat_colors.data[i].xyz;
 	vec4  cov_a = splat_covariances.data[2*i + 0]; // (Sxx, Syy, Szz, Sxy)
 	vec4  cov_b = splat_covariances.data[2*i + 1]; // (Sxz, Syz, _, _)
 	float instance_opacity  = splat_opacities.data[i];
 
-
 	frag_color = instance_color;
 	frag_opacity = instance_opacity;
-
 
 	// center in world
 	mat4 MV = view * model;
 	vec4 view_center =  MV * vec4(instance_position, 1.0);
-
-	splat_depth_keys.data[i] = depth_to_key(-view_center.z);
 
 	// Early reject splats behind the near plane to avoid unstable projection.
 	if (view_center.z >= -1e-4) {
@@ -65,7 +61,6 @@ void main()
 		gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
 		return;
 	}
-
 
 	// Reconstruct the symmetric 3D covariance from its 6 unique entries
 	mat3 sigma3D = mat3(
@@ -89,9 +84,16 @@ void main()
 	float a = sigma2D[0][0]; float b = sigma2D[1][1]; float c = sigma2D[0][1];
 	float det = a*b-c*c; 
 	float tr = a+b;
-	float discr = tr*tr-4*det;
+	float discr = max(tr*tr-4*det, 0.0);
 	float lambda1 = (tr + sqrt(discr))/2.0; 
 	float lambda2 = (tr - sqrt(discr))/2.0; 
+
+	// Early reject ill-conditioned splats
+	if (lambda1 <= 1e-12 || lambda2 <= 1e-12) {
+		frag_opacity = 0.0;
+		gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+		return;
+	}
 
 	vec2 dir1 = vec2((lambda1-b), c); dir1 = normalize(dir1);
 	vec2 dir2 = vec2(-dir1.y, dir1.x); 
@@ -128,22 +130,23 @@ void main()
 		return;
 	}
 
-	// Only add visibility for the splat for the 1st vertex of the quad
-	if (gl_VertexID == 0) {
+	if (prepass_only != 0) {
 		uint slot = atomicCounterIncrement(visible_count);
 		uint key = depth_to_key(-view_center.z);
 		if (depth_bits < 32) {
 			key >>= (32u - uint(depth_bits));
 		}
-		sort_pairs.data[slot].key = key;
+		sort_pairs.data[slot].key = ~key; // radix ascending => far-to-near draw order
 		sort_pairs.data[slot].index = uint(i);
+		gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+		return;
 	}
+
 	vec2 delta = axis1_ndc * vertex_position.x + axis2_ndc * vertex_position.y;
 	
-	uv = vertex_position.xy *spread;
+	uv = vertex_position.xy * spread;
 
 	vec4 screen_position = clip_center;
-
 	screen_position.xy += delta * screen_position.w;
 
 	gl_Position = screen_position;
