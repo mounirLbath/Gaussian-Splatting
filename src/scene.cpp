@@ -2,6 +2,7 @@
 #include "helper.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <sstream>
 
@@ -426,6 +427,12 @@ void scene_structure::display_gui()
 	if (ImGui::Combo("Depth bits", &depth_index, depth_labels, 3)) {
 		gui.depth_bits = (depth_index == 0) ? 16 : (depth_index == 1) ? 24 : 32;
 	}
+	ImGui::Spacing();
+	if (ImGui::Button(animation_mode ? "Switch to manual camera" : "Switch to looping camera")) {
+		animation_mode = !animation_mode;
+		if (animation_mode)
+			animation_time = 0.0f;
+	}
 }
 
 
@@ -447,8 +454,27 @@ void scene_structure::keyboard_event()
 }
 void scene_structure::idle_frame()
 {
+	if (animation_mode)
+		update_camera_animation(inputs.time_interval);
 	camera_control.idle_frame();
 	
+}
+
+void scene_structure::update_camera_animation(float dt)
+{
+	animation_time += dt;
+	float const t = std::fmod(animation_time, animation_period);
+	float const phase = 2 * Pi * t / animation_period;
+	float const faster_phase = phase * 2.0f; // faster oscillation for pitch
+
+	camera_control.camera_model.set_rotation_axis({0.0f, 1.0f, 0.0f});
+	camera_control.camera_model.center_of_rotation = animation_center;
+	camera_control.camera_model.yaw = phase; // Rotate around the green (Y) axis
+	camera_control.camera_model.pitch = animation_pitch_amplitude * (1.3+std::sin(faster_phase)); // Up/down tilt
+	camera_control.camera_model.roll = Pi;
+
+	float const zoom = 0.30f - animation_zoom_amplitude * (0.5f - 0.5f * std::cos(phase)); // Zoom in and out smoothly
+	camera_control.camera_model.distance_to_center = animation_base_distance * zoom;
 }
 
 void scene_structure::display_info()

@@ -54,6 +54,15 @@ struct scene_structure : cgp::scene_inputs_generic {
 	// The model of camera projection (intrinsic parameters)
 	camera_projection_perspective camera_projection;
 
+	// Camera animation state
+	bool animation_mode = false;
+	float animation_time = 0.0f;
+	float animation_period = 20.0f;
+	float animation_pitch_amplitude = 0.25f;
+	float animation_zoom_amplitude = 0.2f;
+	float animation_base_distance = 7.5f;
+	vec3 animation_center = {0.0f, -0.15f, 0.0f};
+
 	
 	
 	// ****************************** //
@@ -96,6 +105,7 @@ struct scene_structure : cgp::scene_inputs_generic {
 	void mouse_click_event();
 	void keyboard_event();
 	void idle_frame();
+	void update_camera_animation(float dt);
 
 };
 
