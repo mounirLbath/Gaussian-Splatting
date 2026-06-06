@@ -105,3 +105,25 @@ endif()
 if(EMSCRIPTEN)
     message(FATAL_ERROR "Emscripten/WebGL2 is no longer supported. Build with a desktop OpenGL 4.3+ toolchain.")
 endif()
+
+# Bullet Physics library
+set(BUILD_BULLET2_DEMOS OFF CACHE BOOL "" FORCE)
+set(BUILD_BULLET3 OFF CACHE BOOL "" FORCE)
+set(BUILD_EXTRAS OFF CACHE BOOL "" FORCE)
+set(BUILD_UNIT_TESTS OFF CACHE BOOL "" FORCE)
+set(BUILD_CPU_DEMOS OFF CACHE BOOL "" FORCE)
+set(BUILD_ENET OFF CACHE BOOL "" FORCE)
+set(BUILD_CLSOCKET OFF CACHE BOOL "" FORCE)
+set(BUILD_OPENGL3_DEMOS OFF CACHE BOOL "" FORCE)
+set(BUILD_PYBULLET OFF CACHE BOOL "" FORCE)
+set(USE_GRAPHICAL_BENCHMARK OFF CACHE BOOL "" FORCE)
+add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/third_party/bullet3" EXCLUDE_FROM_ALL)
+
+target_link_libraries(${PROJECT_NAME} PRIVATE
+    BulletDynamics
+    BulletCollision
+    LinearMath
+)
+target_include_directories(${PROJECT_NAME} PRIVATE
+    "${CMAKE_CURRENT_LIST_DIR}/third_party/bullet3/src"
+)

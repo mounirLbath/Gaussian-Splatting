@@ -4,6 +4,7 @@
 #include "cgp/cgp.hpp"
 
 #include "environment.hpp"
+#include "physics.hpp"
 
 using cgp::mesh_drawable;
 
@@ -13,6 +14,9 @@ struct gui_parameters {
 	bool display_frame = false;
 	float alpha_cutoff = 0.004f;
 	int depth_bits = 32;
+	int num_objects = 5;
+	float vertical_spacing = 0.5f;
+	float horizontal_variance = 0.15f;
 };
 
 
@@ -70,14 +74,24 @@ struct scene_structure : cgp::scene_inputs_generic {
 	// ****************************** //
 
 	mesh_drawable global_frame;          // The standard global frame
+	mesh_drawable table_plane;
 
 	timer_basic timer;
 
 	mesh_drawable quad1;
 
+	physics_world physics;
+
+	numarray<vec3> template_splat_points;
+	numarray<vec3> template_splat_colors;
+	numarray<vec4> template_splat_covariances;
+	numarray<float> template_splat_opacities;
+	int template_splat_count = 0;
+
 	numarray<vec3> splat_points;
 	numarray<vec3> splat_colors;
 	numarray<float> splat_opacities;
+	numarray<vec4> splat_covariances;
 
 
 	// Per-splat data stored as SSBOs
@@ -106,6 +120,10 @@ struct scene_structure : cgp::scene_inputs_generic {
 	void keyboard_event();
 	void idle_frame();
 	void update_camera_animation(float dt);
+	void reset_objects();
+	void fill_splats_from_physics();
+	void update_splats_from_physics();
+	void rebuild_splat_gpu_buffers();
 
 };
 

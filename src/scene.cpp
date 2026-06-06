@@ -5,12 +5,51 @@
 #include <cmath>
 #include <fstream>
 #include <sstream>
+#include <vector>
 
 using namespace cgp;
 
 namespace {
 
 constexpr size_t radix_block_size = 128u * 4u;
+
+vec3 compute_bounds_center(numarray<vec3> const& points)
+{
+	if (points.size() <= 0)
+		return {0, 0, 0};
+	vec3 min_p = points[0];
+	vec3 max_p = points[0];
+	for (int i = 1; i < points.size(); ++i) {
+		min_p = { std::min(min_p.x, points[i].x), std::min(min_p.y, points[i].y), std::min(min_p.z, points[i].z) };
+		max_p = { std::max(max_p.x, points[i].x), std::max(max_p.y, points[i].y), std::max(max_p.z, points[i].z) };
+	}
+	return 0.5f * (min_p + max_p);
+}
+
+float compute_mesh_to_splat_scale(numarray<vec3> const& mesh_vertices, numarray<vec3> const& splat_points)
+{
+	if (mesh_vertices.size() == 0 || splat_points.size() == 0)
+		return 1.0f;
+
+	vec3 mesh_min = mesh_vertices[0];
+	vec3 mesh_max = mesh_vertices[0];
+	vec3 splat_min = splat_points[0];
+	vec3 splat_max = splat_points[0];
+	for (int i = 1; i < mesh_vertices.size(); ++i) {
+		mesh_min = { std::min(mesh_min.x, mesh_vertices[i].x), std::min(mesh_min.y, mesh_vertices[i].y), std::min(mesh_min.z, mesh_vertices[i].z) };
+		mesh_max = { std::max(mesh_max.x, mesh_vertices[i].x), std::max(mesh_max.y, mesh_vertices[i].y), std::max(mesh_max.z, mesh_vertices[i].z) };
+	}
+	for (int i = 1; i < splat_points.size(); ++i) {
+		splat_min = { std::min(splat_min.x, splat_points[i].x), std::min(splat_min.y, splat_points[i].y), std::min(splat_min.z, splat_points[i].z) };
+		splat_max = { std::max(splat_max.x, splat_points[i].x), std::max(splat_max.y, splat_points[i].y), std::max(splat_max.z, splat_points[i].z) };
+	}
+
+	vec3 const mesh_extent = mesh_max - mesh_min;
+	vec3 const splat_extent = splat_max - splat_min;
+	float const mesh_span = std::max({ mesh_extent.x, mesh_extent.y, mesh_extent.z, 1e-4f });
+	float const splat_span = std::max({ splat_extent.x, splat_extent.y, splat_extent.z, 1e-4f });
+	return splat_span / mesh_span;
+}
 
 	numarray<vec4> pad_vec3_to_vec4(numarray<vec3> const& src)
 {
@@ -28,6 +67,11 @@ constexpr size_t radix_block_size = 128u * 4u;
 template <typename T>
 void create_static_ssbo(GLuint& ssbo, numarray<T> const& data)
 {
+	// Reset ssbo if needed
+	if (ssbo != 0) {
+		glDeleteBuffers(1, &ssbo);
+		ssbo = 0;
+	}
 	if (data.size() <= 0)
 		return;
 	glGenBuffers(1, &ssbo);
@@ -48,6 +92,11 @@ void bind_ssbo(GLuint ssbo, GLuint binding_point)
 
 void create_dynamic_ssbo(GLuint& ssbo, size_t count, size_t elem_size)
 {
+	// Reset ssbo if needed
+	if (ssbo != 0) {
+		glDeleteBuffers(1, &ssbo);
+		ssbo = 0;
+	}
 	if (count == 0)
 		return;
 	glGenBuffers(1, &ssbo);
@@ -187,27 +236,133 @@ void scene_structure::initialize()
 
 	numarray<vec3> splat_scales;
 	numarray<vec4> splat_rotations;
-	read_points_from_ply_file("./assets/nike/scene.ply", splat_points, splat_colors, splat_scales, splat_rotations, splat_opacities, 0.7);
 
-	std::cout << splat_points.size() << " points" << std::endl;
+	// Open the asset folder (containing scene.ply splats and scene_mesh.ply)
+	std::string const asset_folder = "./assets/nike_retrained/";
+	read_points_from_ply_file(asset_folder + "scene.ply", template_splat_points, template_splat_colors, splat_scales, splat_rotations, template_splat_opacities, 0.7);
+
+	vec3 const splat_center = compute_bounds_center(template_splat_points);
+	for (int i = 0; i < template_splat_points.size(); ++i)
+		template_splat_points[i] = template_splat_points[i] - splat_center;
+
+	// Get the mesh
+	numarray<vec3> mesh_vertices;
+	read_mesh_vertices_from_ply_file(asset_folder + "scene_mesh.ply", mesh_vertices);
+	float const mesh_scale = compute_mesh_to_splat_scale(mesh_vertices, template_splat_points);
+
+	template_splat_count = template_splat_points.size();
+	// Precompute covariances
+	compute_covariances_from_scales_and_rotations(splat_scales, splat_rotations, template_splat_covariances);
+	std::cout << template_splat_count << " template splats" << std::endl;
+
+	// Initialize the physics system 
+	physics.initialize(mesh_vertices, mesh_scale);
+	physics.set_object_count(gui.num_objects);
+
+	// Grey collision table
+	mesh table_mesh = mesh_primitive_grid(
+		{-4.0f, -4.0f, 0.0f},
+		{ 4.0f, -4.0f, 0.0f},
+		{ 4.0f,  4.0f, 0.0f},
+		{-4.0f,  4.0f, 0.0f},
+		20, 20);
+	table_plane.initialize_data_on_gpu(table_mesh);
+	table_plane.material.color = {0.45f, 0.45f, 0.45f};
+	table_plane.material.phong.ambient = 0.2f;
+	table_plane.material.phong.diffuse = 0.6f;
+	table_plane.material.phong.specular = 0.1f;
+	table_plane.material.texture_settings.two_sided = true;
 
 	quad1.initialize_data_on_gpu(quad_mesh);
 	quad1.shader.load(project::path + "shaders/instancing/instancing.vert.glsl", project::path + "shaders/instancing/instancing.frag.glsl");
-	// quad1.model.rotation = rotation_transform::from_axis_angle({1,0,0}, -3.14/2.0);
-	// quad1.initialize_supplementary_data_on_gpu(splat_points, /*location*/ 4, /*divisor: 1=per instance, 0=per vertex*/ 1);
 
-	int const n = splat_points.size();
+	rebuild_splat_gpu_buffers();
+	reset_objects();
+
+
+	std::cout << "End function scene_structure::initialize()" << std::endl;
+
+}
+
+
+void scene_structure::reset_objects()
+{
+	int const old_total = physics.object_count() * template_splat_count;
+	physics.set_object_count(gui.num_objects);
+	physics.reset_objects(gui.vertical_spacing, gui.horizontal_variance);
+	int const new_total = physics.object_count() * template_splat_count;
+	if (new_total != old_total)
+		rebuild_splat_gpu_buffers();
+	else
+		update_splats_from_physics();
+}
+
+void scene_structure::fill_splats_from_physics()
+{
+	int const num_objects = physics.object_count();
+	int const n_template = template_splat_count;
+	int const total = num_objects * n_template;
+	if (total <= 0)
+		return;
+
+	splat_points.resize(total);
+	splat_colors.resize(total);
+	splat_opacities.resize(total);
+	splat_covariances.resize(total * 2);
+
+	for (int object_index = 0; object_index < num_objects; ++object_index) {
+		mat3 const R = physics.get_rotation(object_index);
+		vec3 const T = physics.get_position(object_index);
+		for (int i = 0; i < n_template; ++i) {
+			int const dst = object_index * n_template + i;
+			splat_points[dst] = R * template_splat_points[i] + T;
+			splat_colors[dst] = template_splat_colors[i];
+			splat_opacities[dst] = template_splat_opacities[i];
+
+			vec4 const cov_a = template_splat_covariances[2 * i + 0];
+			vec4 const cov_b = template_splat_covariances[2 * i + 1];
+			mat3 sigma_local = mat3(
+				cov_a.x, cov_a.w, cov_b.x,
+				cov_a.w, cov_a.y, cov_b.y,
+				cov_b.x, cov_b.y, cov_a.z);
+			mat3 const sigma_world = R * sigma_local * transpose(R);
+			splat_covariances[2 * dst + 0] = { sigma_world(0,0), sigma_world(1,1), sigma_world(2,2), sigma_world(0,1) };
+			splat_covariances[2 * dst + 1] = { sigma_world(0,2), sigma_world(1,2), 0.0f, 0.0f };
+		}
+	}
+}
+
+void scene_structure::update_splats_from_physics()
+{
+	fill_splats_from_physics();
+
+	numarray<vec4> const pos4 = pad_vec3_to_vec4(splat_points);
+	numarray<vec4> const col4 = pad_vec3_to_vec4(splat_colors);
+	if (ssbo_points == 0)
+		return;
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_points);
+	glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, GLsizeiptr(pos4.size()) * GLsizeiptr(sizeof(vec4)), ptr(pos4));
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_colors);
+	glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, GLsizeiptr(col4.size()) * GLsizeiptr(sizeof(vec4)), ptr(col4));
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_covariances);
+	glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, GLsizeiptr(splat_covariances.size()) * GLsizeiptr(sizeof(vec4)), ptr(splat_covariances));
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_opacities);
+	glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, GLsizeiptr(splat_opacities.size()) * GLsizeiptr(sizeof(float)), ptr(splat_opacities));
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+}
+
+void scene_structure::rebuild_splat_gpu_buffers()
+{
+	int const n = physics.object_count() * template_splat_count;
 	splat_indices.resize(n);
 	for (int k = 0; k < n; ++k)
 		splat_indices[k] = k;
 
-	// Precompute the 3D covariance Sigma = R * diag(s^2) * R^T on the CPU
-	numarray<vec4> splat_covariances;
-	compute_covariances_from_scales_and_rotations(splat_scales, splat_rotations, splat_covariances);
+	fill_splats_from_physics();
 
-	// Upload per-splat data to SSBOs. Points and colors are padded to vec4
 	numarray<vec4> const pos4 = pad_vec3_to_vec4(splat_points);
 	numarray<vec4> const col4 = pad_vec3_to_vec4(splat_colors);
+
 	create_static_ssbo(ssbo_points, pos4);
 	create_static_ssbo(ssbo_colors, col4);
 	create_static_ssbo(ssbo_covariances, splat_covariances);
@@ -220,10 +375,9 @@ void scene_structure::initialize()
 	create_dynamic_ssbo(ssbo_radix_prefix, 256, sizeof(unsigned int));
 	create_dynamic_ssbo(ssbo_indirect_draw, 5, sizeof(unsigned int));
 
-	// Set up the indirect draw parameters.
 	DrawElementsIndirectCommand indirect_cmd = {};
 	indirect_cmd.count = GLuint(quad1.ebo_connectivity.size * 3);
-	indirect_cmd.instanceCount = GLuint(splat_points.size());
+	indirect_cmd.instanceCount = GLuint(n);
 	indirect_cmd.firstIndex = 0u;
 	indirect_cmd.baseVertex = 0;
 	indirect_cmd.baseInstance = 0u;
@@ -231,23 +385,24 @@ void scene_structure::initialize()
 	glBufferSubData(GL_DRAW_INDIRECT_BUFFER, 0, sizeof(DrawElementsIndirectCommand), &indirect_cmd);
 	glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
 
-	// Load the radix sort shader.
-	compute_radix_program = load_compute_program(project::path + "shaders/compute/radix_sort.comp.glsl");
+	if (compute_radix_program == 0)
+		compute_radix_program = load_compute_program(project::path + "shaders/compute/radix_sort.comp.glsl");
 
+	if (ssbo_visible_counter == 0) {
+		glGenBuffers(1, &ssbo_visible_counter);
+		glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, ssbo_visible_counter);
+		glBufferData(GL_ATOMIC_COUNTER_BUFFER, sizeof(unsigned int), nullptr, GL_DYNAMIC_DRAW);
+		glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, 0);
+	}
 
-	glGenBuffers(1, &ssbo_visible_counter);
-	glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, ssbo_visible_counter);
-	glBufferData(GL_ATOMIC_COUNTER_BUFFER, sizeof(unsigned int), nullptr, GL_DYNAMIC_DRAW);
-	glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, 0);
-
-	glGenBuffers(1, &vbo_indices);
+	if (vbo_indices == 0)
+		glGenBuffers(1, &vbo_indices);
 	glBindBuffer(GL_ARRAY_BUFFER, vbo_indices);
 	glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(n) * GLsizeiptr(sizeof(int)), ptr(splat_indices), GL_DYNAMIC_DRAW);
 	glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-	setup_instance_index_vao(quad1.vao, vbo_indices, /* location = */ 4);
+	setup_instance_index_vao(quad1.vao, vbo_indices, 4);
 
-	// Bind each SSBO once to its binding point
 	bind_ssbo(ssbo_points, 0);
 	bind_ssbo(ssbo_colors, 1);
 	bind_ssbo(ssbo_covariances, 2);
@@ -259,10 +414,6 @@ void scene_structure::initialize()
 	bind_ssbo(ssbo_radix_hist, 8);
 	bind_ssbo(ssbo_radix_prefix, 9);
 	bind_ssbo(ssbo_indirect_draw, 10);
-
-
-	std::cout << "End function scene_structure::initialize()" << std::endl;
-
 }
 
 
@@ -281,6 +432,8 @@ void scene_structure::display_frame()
 	// Draw the 3D reference frame axes if enabled
 	if (gui.display_frame)
 		draw(global_frame, environment);
+
+	draw(table_plane, environment);
 
 	// Update time
 	timer.update();
@@ -433,6 +586,13 @@ void scene_structure::display_gui()
 		if (animation_mode)
 			animation_time = 0.0f;
 	}
+	if (ImGui::CollapsingHeader("Physics")) {
+		ImGui::SliderInt("Number of objects", &gui.num_objects, 1, 20);
+		ImGui::SliderFloat("Vertical spacing", &gui.vertical_spacing, 0.05f, 1.0f);
+		ImGui::SliderFloat("Horizontal variance", &gui.horizontal_variance, 0.0f, 1.0f);
+		if (ImGui::Button("Reset objects"))
+			reset_objects();
+	}
 }
 
 
@@ -457,7 +617,9 @@ void scene_structure::idle_frame()
 	if (animation_mode)
 		update_camera_animation(inputs.time_interval);
 	camera_control.idle_frame();
-	
+
+	physics.step(inputs.time_interval);
+	update_splats_from_physics();
 }
 
 void scene_structure::update_camera_animation(float dt)

@@ -201,3 +201,66 @@ void compute_covariances_from_scales_and_rotations(
 		out_covariances[2 * k + 1] = { Sigma(0,2), Sigma(1,2), 0.0f, 0.0f};
 	}
 }
+
+
+void read_mesh_vertices_from_ply_file(
+    const std::string& filepath,
+    cgp::numarray<cgp::vec3>& vertices)
+{
+
+	// Open the file
+	std::ifstream file(filepath, std::ios::binary);
+	if (!file.is_open()) {
+		std::cerr << "Cannot open mesh file: " << filepath << std::endl;
+		return;
+	}
+
+	std::string line;
+	int nb_vertex = 0;
+	size_t vertex_size = 0;
+	bool in_vertex_element = false;
+	std::unordered_map<std::string, Property> properties;
+
+	// Get the properties of the vertices
+	while (std::getline(file, line)) {
+		if (line.rfind("element vertex", 0) == 0) {
+			std::istringstream iss(line);
+			std::string tmp;
+			iss >> tmp >> tmp >> nb_vertex;
+			in_vertex_element = true;
+		}
+		else if (line.rfind("element ", 0) == 0) {
+			in_vertex_element = false;
+		}
+		else if (in_vertex_element && line.rfind("property float", 0) == 0) {
+			std::istringstream iss(line);
+			std::string tmp, type, name;
+			iss >> tmp >> type >> name;
+			properties[name] = {vertex_size, type};
+			vertex_size += 4u;
+		}
+		if (line == "end_header")
+			break;
+	}
+
+	// Run through all vertices
+	std::streampos data_start = file.tellg();
+	file.seekg(0, std::ios::end);
+	size_t const data_size = static_cast<size_t>(file.tellg() - data_start);
+	file.seekg(data_start);
+
+	std::vector<uint8_t> buffer(data_size);
+	file.read(reinterpret_cast<char*>(buffer.data()), data_size);
+	file.close();
+
+	uint8_t* ptr = buffer.data();
+	for (int i = 0; i < nb_vertex; ++i) {
+		// Keep only {x, y, z} properties of vertices
+		float x = 0, y = 0, z = 0;
+		std::memcpy(&x, ptr + properties["x"].offset, 4);
+		std::memcpy(&y, ptr + properties["y"].offset, 4);
+		std::memcpy(&z, ptr + properties["z"].offset, 4);
+		vertices.push_back({x, y, z});
+		ptr += vertex_size;
+	}
+}
