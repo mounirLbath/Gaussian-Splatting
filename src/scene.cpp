@@ -197,13 +197,10 @@ void scene_structure::initialize()
 
 	// Set the behavior of the camera and its initial position
 	// ********************************************** //
-	camera_control.initialize(inputs, window); 
-	camera_control.set_rotation_axis_z(); // camera rotates around z-axis
-	//   look_at(camera_position, targeted_point, up_direction)
-	camera_control.look_at(
-		{ 5.0f, -4.0f, 3.5f } /* position of the camera in the 3D scene */,
-		{0,0,0} /* targeted point in 3D scene */,
-		{0,0,1} /* direction of the "up" vector */);
+	camera_control.initialize(inputs, window);
+	camera_control.set_rotation_axis_z();
+	camera_control.look_at({0.0f, -4.0f, 1.26f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 1.0f});
+	camera_control.enable_play_mode();
 
 	camera_projection = camera_projection_perspective{
 		50.0f * Pi/180, // Field of view
@@ -259,13 +256,13 @@ void scene_structure::initialize()
 	physics.initialize(mesh_vertices, mesh_scale);
 	physics.set_object_count(gui.num_objects);
 
-	// Grey collision table
+	// Grey collision table (50x larger play area)
 	mesh table_mesh = mesh_primitive_grid(
-		{-4.0f, -4.0f, 0.0f},
-		{ 4.0f, -4.0f, 0.0f},
-		{ 4.0f,  4.0f, 0.0f},
-		{-4.0f,  4.0f, 0.0f},
-		20, 20);
+		{-200.0f, -200.0f, 0.0f},
+		{ 200.0f, -200.0f, 0.0f},
+		{ 200.0f,  200.0f, 0.0f},
+		{-200.0f,  200.0f, 0.0f},
+		100, 100);
 	table_plane.initialize_data_on_gpu(table_mesh);
 	table_plane.material.color = {0.45f, 0.45f, 0.45f};
 	table_plane.material.phong.ambient = 0.2f;
@@ -581,11 +578,9 @@ void scene_structure::display_gui()
 		gui.depth_bits = (depth_index == 0) ? 16 : (depth_index == 1) ? 24 : 32;
 	}
 	ImGui::Spacing();
-	if (ImGui::Button(animation_mode ? "Switch to manual camera" : "Switch to looping camera")) {
-		animation_mode = !animation_mode;
-		if (animation_mode)
-			animation_time = 0.0f;
-	}
+	ImGui::Text("Mouse: %s (Esc to toggle)", camera_control.cursor_trapped() ? "captured" : "free");
+	if (grab.active)
+		ImGui::Text("Grabbing object %d", grab.body_index);
 	if (ImGui::CollapsingHeader("Physics")) {
 		ImGui::SliderInt("Number of objects", &gui.num_objects, 1, 20);
 		ImGui::SliderFloat("Vertical spacing", &gui.vertical_spacing, 0.05f, 1.0f);
@@ -600,50 +595,135 @@ void scene_structure::display_gui()
 
 void scene_structure::mouse_move_event()
 {
-	if (!inputs.keyboard.shift)
-		camera_control.action_mouse_move();
-	
+	camera_control.action_mouse_move();
 }
+
 void scene_structure::mouse_click_event()
 {
-	camera_control.action_mouse_click();
+	if (inputs.mouse.click.last_action == last_mouse_cursor_action::click_left)
+		try_start_grab();
+	if (inputs.mouse.click.last_action == last_mouse_cursor_action::release_left)
+		release_grab();
 }
+
 void scene_structure::keyboard_event()
 {
-	camera_control.action_keyboard();
+	camera_control.action_keyboard_playable();
 }
+
+bool scene_structure::validate_camera_move(vec3 const& from, vec3 const& to) const
+{
+	int const exclude = grab.active ? grab.body_index : -1;
+	if (!physics.can_move_camera(from, to, exclude))
+		return false;
+
+	if (grab.active) {
+		vec3 const front = camera_control.camera_model.front();
+		vec3 const obj_pos = physics.get_position(grab.body_index);
+		vec3 const target_obj = to + grab.distance * front;
+		if (!physics.can_move_object(grab.body_index, obj_pos, target_obj))
+			return false;
+	}
+	return true;
+}
+
+vec3 scene_structure::aim_direction() const
+{
+	return camera_ray_direction(
+		camera_control.camera_model.matrix_frame(),
+		inverse(camera_projection.matrix()),
+		{0.0f, 0.0f});
+}
+
+void scene_structure::draw_crosshair() const
+{
+	if (!camera_control.cursor_trapped())
+		return;
+
+	ImDrawList* draw = ImGui::GetForegroundDrawList();
+	ImVec2 const center = ImVec2(ImGui::GetIO().DisplaySize.x * 0.5f, ImGui::GetIO().DisplaySize.y * 0.5f);
+	float const size = 10.0f;
+	ImU32 const color = IM_COL32(255, 255, 255, 220);
+	draw->AddLine(ImVec2(center.x - size, center.y), ImVec2(center.x + size, center.y), color, 1.5f);
+	draw->AddLine(ImVec2(center.x, center.y - size), ImVec2(center.x, center.y + size), color, 1.5f);
+}
+
+void scene_structure::try_start_grab()
+{
+	if (!camera_control.cursor_trapped())
+		return;
+
+	vec3 const origin = camera_control.camera_model.position();
+	vec3 const ray_dir = aim_direction();
+
+	physics_ray_hit const hit = physics.raycast_dynamic(origin, ray_dir, 200.0f);
+	if (!hit.hit)
+		return;
+
+	grab.active = true;
+	grab.body_index = hit.body_index;
+	grab.distance = std::max(hit.distance, 0.5f);
+	grab.locked_rotation = physics.get_rotation(hit.body_index);
+}
+
+void scene_structure::release_grab()
+{
+	grab.active = false;
+	grab.body_index = -1;
+}
+
+void scene_structure::update_grabbed_object()
+{
+	if (!grab.active || grab.body_index < 0)
+		return;
+
+	vec3 const camera_pos = camera_control.camera_model.position();
+	vec3 const front = camera_control.camera_model.front();
+	vec3 const target = camera_pos + grab.distance * front;
+	vec3 const current = physics.get_position(grab.body_index);
+
+	if (physics.can_move_object(grab.body_index, current, target)) {
+		vec3 vel = (target - current) * grab_pull_strength;
+		float const speed = norm(vel);
+		if (speed > grab_max_speed)
+			vel = vel * (grab_max_speed / speed);
+		physics.set_linear_velocity(grab.body_index, vel);
+	}
+	else {
+		physics.set_linear_velocity(grab.body_index, {0, 0, 0});
+	}
+
+	physics.set_angular_velocity(grab.body_index, {0, 0, 0});
+	physics.set_rotation(grab.body_index, grab.locked_rotation);
+}
+
 void scene_structure::idle_frame()
 {
-	if (animation_mode)
-		update_camera_animation(inputs.time_interval);
+	vec3 const camera_pos_before = camera_control.camera_model.position_camera;
+
 	camera_control.idle_frame();
 
+	vec3 const camera_pos_after = camera_control.camera_model.position_camera;
+	if (!validate_camera_move(camera_pos_before, camera_pos_after))
+		camera_control.camera_model.position_camera = camera_pos_before;
+
+	update_grabbed_object();
+
 	physics.step(inputs.time_interval);
+
+	if (grab.active)
+		physics.set_rotation(grab.body_index, grab.locked_rotation);
+
 	update_splats_from_physics();
-}
-
-void scene_structure::update_camera_animation(float dt)
-{
-	animation_time += dt;
-	float const t = std::fmod(animation_time, animation_period);
-	float const phase = 2 * Pi * t / animation_period;
-	float const faster_phase = phase * 2.0f; // faster oscillation for pitch
-
-	camera_control.camera_model.set_rotation_axis({0.0f, 1.0f, 0.0f});
-	camera_control.camera_model.center_of_rotation = animation_center;
-	camera_control.camera_model.yaw = phase; // Rotate around the green (Y) axis
-	camera_control.camera_model.pitch = animation_pitch_amplitude * (1.3+std::sin(faster_phase)); // Up/down tilt
-	camera_control.camera_model.roll = Pi;
-
-	float const zoom = 0.30f - animation_zoom_amplitude * (0.5f - 0.5f * std::cos(phase)); // Zoom in and out smoothly
-	camera_control.camera_model.distance_to_center = animation_base_distance * zoom;
 }
 
 void scene_structure::display_info()
 {
-	std::cout << "\nCAMERA CONTROL:" << std::endl;
+	std::cout << "\nPLAY CONTROLS:" << std::endl;
 	std::cout << "-----------------------------------------------" << std::endl;
-	std::cout << camera_control.doc_usage() << std::endl;
+	std::cout << "ZQSD / WASD + mouse: walk on the plane and look around" << std::endl;
+	std::cout << "Left click: grab physics object (hold to carry)" << std::endl;
+	std::cout << "Escape: release / recapture mouse (for GUI)" << std::endl;
 	std::cout << "-----------------------------------------------\n" << std::endl;
 
 

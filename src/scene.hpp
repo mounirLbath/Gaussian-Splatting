@@ -5,6 +5,7 @@
 
 #include "environment.hpp"
 #include "physics.hpp"
+#include "playable_camera_controller.hpp"
 
 using cgp::mesh_drawable;
 
@@ -52,20 +53,21 @@ struct scene_structure : cgp::scene_inputs_generic {
 	// Camera controller
 	// ****************************** //
 
-	// Controller of the camera (extrinsic parameters: position/orientation) -- to be adapted to the desired model and behavior
-	camera_controller_orbit_euler camera_control; 
+	// First-person camera (ZQSD/WASD + mouse look)
+	playable_camera_controller camera_control;
 
 	// The model of camera projection (intrinsic parameters)
 	camera_projection_perspective camera_projection;
 
-	// Camera animation state
-	bool animation_mode = false;
-	float animation_time = 0.0f;
-	float animation_period = 20.0f;
-	float animation_pitch_amplitude = 0.25f;
-	float animation_zoom_amplitude = 0.2f;
-	float animation_base_distance = 7.5f;
-	vec3 animation_center = {0.0f, -0.15f, 0.0f};
+	struct object_grab_state {
+		bool active = false;
+		int body_index = -1;
+		float distance = 0.0f;
+		mat3 locked_rotation = mat3::build_identity();
+	};
+	object_grab_state grab;
+	float grab_pull_strength = 12.0f;
+	float grab_max_speed = 8.0f;
 
 	
 	
@@ -119,8 +121,13 @@ struct scene_structure : cgp::scene_inputs_generic {
 	void mouse_click_event();
 	void keyboard_event();
 	void idle_frame();
-	void update_camera_animation(float dt);
 	void reset_objects();
+	void update_grabbed_object();
+	bool validate_camera_move(vec3 const& from, vec3 const& to) const;
+	void try_start_grab();
+	void release_grab();
+	void draw_crosshair() const;
+	vec3 aim_direction() const;
 	void fill_splats_from_physics();
 	void update_splats_from_physics();
 	void rebuild_splat_gpu_buffers();

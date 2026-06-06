@@ -145,6 +145,7 @@ void application_structure::animation_loop()
     s.display_frame();
 
     ImGui::End();
+    s.draw_crosshair();
     imgui_render_frame(s.window.glfw_window);
     glfwSwapBuffers(s.window.glfw_window);
     glfwPollEvents();
@@ -235,6 +236,12 @@ void application_structure::on_mouse_click(int button, int action, int mods)
     s.inputs.mouse.click.update_from_glfw_click(button, action);
 
     s.inputs.mouse.on_gui = ImGui::GetIO().WantCaptureMouse;
+
+    bool const play_left_click = s.camera_control.cursor_trapped() && button == GLFW_MOUSE_BUTTON_LEFT;
+    if (play_left_click) {
+        s.mouse_click_event();
+        return;
+    }
     if (s.inputs.mouse.on_gui)
         return;
     s.mouse_click_event();
@@ -260,8 +267,12 @@ void application_structure::on_keyboard(int key, int scancode, int action, int m
     ImGui_ImplGlfw_KeyCallback(s.window.glfw_window, key, scancode, action, mods);
     bool imgui_capture_keyboard = ImGui::GetIO().WantCaptureKeyboard;
 
-    if (!imgui_capture_keyboard) {
-        s.inputs.keyboard.update_from_glfw_key(key, action);
+    s.inputs.keyboard.update_from_glfw_key(key, action);
+
+    if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
+        s.camera_control.action_keyboard_playable();
+    }
+    else if (!imgui_capture_keyboard) {
         s.keyboard_event();
 
         if (key == GLFW_KEY_F && action == GLFW_PRESS && s.inputs.keyboard.shift) {
@@ -287,7 +298,8 @@ void application_structure::on_window_focus(int focused)
     auto& s = scene();
 
     if (focused) {
-        glfwSetInputMode(s.window.glfw_window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+        glfwSetInputMode(s.window.glfw_window, GLFW_CURSOR,
+            s.camera_control.cursor_trapped() ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
     }
 }
 
