@@ -77,12 +77,19 @@ struct scene_structure : cgp::scene_inputs_generic {
 
 	mesh_drawable global_frame;          // The standard global frame
 	mesh_drawable table_plane;
+	mesh_drawable shadow_mesh;
+	mesh_drawable shadow_overlay_plane;
+	cgp::opengl_shader_structure shadow_shader;
 
 	timer_basic timer;
 
 	mesh_drawable quad1;
 
 	physics_world physics;
+
+	numarray<vec3> shadow_object_positions;
+	numarray<mat3> shadow_object_rotations;
+	float shadow_transform_blend = 0.28f;
 
 	numarray<vec3> template_splat_points;
 	numarray<vec3> template_splat_colors;
@@ -131,6 +138,8 @@ struct scene_structure : cgp::scene_inputs_generic {
 	void fill_splats_from_physics();
 	void update_splats_from_physics();
 	void rebuild_splat_gpu_buffers();
+	void display_shadows();
+	void sync_shadow_transforms();
 
 };
 

@@ -264,3 +264,99 @@ void read_mesh_vertices_from_ply_file(
 		ptr += vertex_size;
 	}
 }
+
+void read_mesh_from_ply_file(const std::string& filepath, cgp::mesh& mesh)
+{
+	std::ifstream file(filepath, std::ios::binary);
+	if (!file.is_open()) {
+		std::cerr << "Cannot open mesh file: " << filepath << std::endl;
+		return;
+	}
+
+	std::string line;
+	int nb_vertex = 0;
+	int nb_face = 0;
+	size_t vertex_size = 0;
+	size_t face_size = 0;
+	bool in_vertex_element = false;
+	bool in_face_element = false;
+	std::unordered_map<std::string, Property> vertex_properties;
+
+	while (std::getline(file, line)) {
+		if (line.rfind("element vertex", 0) == 0) {
+			std::istringstream iss(line);
+			std::string tmp;
+			iss >> tmp >> tmp >> nb_vertex;
+			in_vertex_element = true;
+			in_face_element = false;
+		}
+		else if (line.rfind("element face", 0) == 0) {
+			std::istringstream iss(line);
+			std::string tmp;
+			iss >> tmp >> tmp >> nb_face;
+			in_vertex_element = false;
+			in_face_element = true;
+		}
+		else if (line.rfind("element ", 0) == 0) {
+			in_vertex_element = false;
+			in_face_element = false;
+		}
+		else if (in_vertex_element && line.rfind("property float", 0) == 0) {
+			std::istringstream iss(line);
+			std::string tmp, type, name;
+			iss >> tmp >> type >> name;
+			vertex_properties[name] = {vertex_size, type};
+			vertex_size += 4u;
+		}
+		else if (in_face_element && line.rfind("property", 0) == 0) {
+			if (line.find("list") != std::string::npos) {
+				face_size += 1u;
+				face_size += 4u * 3u;
+			}
+			else {
+				face_size += 1u;
+			}
+		}
+		if (line == "end_header")
+			break;
+	}
+
+	std::streampos data_start = file.tellg();
+	file.seekg(0, std::ios::end);
+	size_t const data_size = static_cast<size_t>(file.tellg() - data_start);
+	file.seekg(data_start);
+
+	std::vector<uint8_t> buffer(data_size);
+	file.read(reinterpret_cast<char*>(buffer.data()), data_size);
+	file.close();
+
+	uint8_t const* ptr = buffer.data();
+	mesh.position.resize(nb_vertex);
+	for (int i = 0; i < nb_vertex; ++i) {
+		float x = 0, y = 0, z = 0;
+		std::memcpy(&x, ptr + vertex_properties["x"].offset, 4);
+		std::memcpy(&y, ptr + vertex_properties["y"].offset, 4);
+		std::memcpy(&z, ptr + vertex_properties["z"].offset, 4);
+		mesh.position[i] = {x, y, z};
+		ptr += vertex_size;
+	}
+
+	mesh.connectivity.resize(nb_face);
+	for (int i = 0; i < nb_face; ++i) {
+		ptr += 4u;
+		uint8_t const count = *ptr;
+		ptr += 1u;
+		if (count < 3) {
+			ptr += count * 4u;
+			continue;
+		}
+		int i0 = 0, i1 = 0, i2 = 0;
+		std::memcpy(&i0, ptr + 0, 4);
+		std::memcpy(&i1, ptr + 4, 4);
+		std::memcpy(&i2, ptr + 8, 4);
+		ptr += count * 4u;
+		mesh.connectivity[i] = {static_cast<unsigned int>(i0), static_cast<unsigned int>(i1), static_cast<unsigned int>(i2)};
+	}
+
+	mesh.fill_empty_field();
+}

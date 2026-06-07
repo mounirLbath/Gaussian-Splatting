@@ -69,6 +69,7 @@ namespace cgp
 
         glfwWindowHint(GLFW_FOCUSED, GLFW_TRUE); // Take focus when created
         glfwWindowHint(GLFW_SAMPLES, 8); // Multisampling
+        glfwWindowHint(GLFW_STENCIL_BITS, 8);
         glfwWindowHint(GLFW_FLOATING, GLFW_FALSE); // Windows is not always on top
 
 #ifdef __APPLE__

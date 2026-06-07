@@ -32,7 +32,7 @@ uniform sampler2D image_texture;   // Texture image identifiant
 
 uniform mat4 view;       // View matrix (rigid transform) of the camera - to compute the camera position
 
-uniform vec3 light; // position of the light
+uniform vec3 light; // direction toward the sun (directional light)
 
 
 // Coefficients of phong illumination model
@@ -83,8 +83,8 @@ void main()
 	// Phong coefficient (diffuse, specular)
 	// *************************************** //
 
-	// Unit direction toward the light
-	vec3 L = normalize(light-fragment.position);
+	// Unit direction toward the sun
+	vec3 L = normalize(light);
 
 	// Diffuse coefficient
 	float diffuse_component = max(dot(N,L),0.0);

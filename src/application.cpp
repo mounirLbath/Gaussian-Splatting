@@ -123,8 +123,8 @@ void application_structure::animation_loop()
 
     vec3 const& background_color = s.environment.background_color;
     glClearColor(background_color.x, background_color.y, background_color.z, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-    glClear(GL_DEPTH_BUFFER_BIT);
+    glClearStencil(0);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
     glEnable(GL_DEPTH_TEST);
 
     float const time_interval = fps_record_.update();

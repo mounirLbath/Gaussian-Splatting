@@ -22,8 +22,8 @@ struct environment_structure : environment_generic_structure
 	// A projection structure (perspective or orthogonal projection)
 	mat4 camera_projection;
 
-	// The position of a light
-	vec3 light = {1,1,1};
+	// Direction toward the sun (directional light, not camera-attached).
+	vec3 light = {0.45f, 0.25f, 0.85f};
 
 	// Additional uniforms that can be attached to the environment if needed (empty by default)
 	uniform_generic_structure uniform_generic;

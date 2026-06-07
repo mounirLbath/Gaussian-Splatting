@@ -162,6 +162,19 @@ void draw_mesh_indirect(mesh_drawable const& drawable, environment_generic_struc
 	glUseProgram(0);
 }
 
+mat4 build_planar_shadow_matrix(vec3 const& light_direction)
+{
+	vec3 const dir = normalize(light_direction);
+	vec4 const plane = {0.0f, 0.0f, 1.0f, 0.0f};
+	vec4 const light = {dir.x, dir.y, dir.z, 0.0f};
+	float const dot = plane.x * light.x + plane.y * light.y + plane.z * light.z + plane.w * light.w;
+	return mat4(
+		dot - light.x * plane.x, -light.x * plane.y, -light.x * plane.z, -light.x * plane.w,
+		-light.y * plane.x, dot - light.y * plane.y, -light.y * plane.z, -light.y * plane.w,
+		-light.z * plane.x, -light.z * plane.y, dot - light.z * plane.z, -light.z * plane.w,
+		-light.w * plane.x, -light.w * plane.y, -light.w * plane.z, dot - light.w * plane.w);
+}
+
 GLuint load_compute_program(std::string const& path)
 {
 	// Open and read the shader source code from file
@@ -201,6 +214,8 @@ void scene_structure::initialize()
 	camera_control.set_rotation_axis_z();
 	camera_control.look_at({0.0f, -4.0f, 1.26f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 1.0f});
 	camera_control.enable_play_mode();
+
+	environment.light = normalize(vec3{0.45f, 0.25f, 0.85f});
 
 	camera_projection = camera_projection_perspective{
 		50.0f * Pi/180, // Field of view
@@ -242,9 +257,11 @@ void scene_structure::initialize()
 	for (int i = 0; i < template_splat_points.size(); ++i)
 		template_splat_points[i] = template_splat_points[i] - splat_center;
 
-	// Get the mesh
+	// Get the mesh (vertices for physics, full mesh for shadows)
 	numarray<vec3> mesh_vertices;
 	read_mesh_vertices_from_ply_file(asset_folder + "scene_mesh.ply", mesh_vertices);
+	mesh shadow_template;
+	read_mesh_from_ply_file(asset_folder + "scene_mesh.ply", shadow_template);
 	float const mesh_scale = compute_mesh_to_splat_scale(mesh_vertices, template_splat_points);
 
 	template_splat_count = template_splat_points.size();
@@ -270,6 +287,20 @@ void scene_structure::initialize()
 	table_plane.material.phong.specular = 0.05f;
 	table_plane.material.texture_settings.two_sided = true;
 
+	vec3 const mesh_center = compute_bounds_center(shadow_template.position);
+	for (int i = 0; i < shadow_template.position.size(); ++i)
+		shadow_template.position[i] = (shadow_template.position[i] - mesh_center) * mesh_scale;
+	shadow_shader.load(project::path + "shaders/shadow/shadow.vert.glsl", project::path + "shaders/shadow/shadow.frag.glsl");
+	shadow_mesh.initialize_data_on_gpu(shadow_template, shadow_shader);
+
+	mesh shadow_overlay_mesh = mesh_primitive_grid(
+		{-200.0f, -200.0f, 0.015f},
+		{ 200.0f, -200.0f, 0.015f},
+		{ 200.0f,  200.0f, 0.015f},
+		{-200.0f,  200.0f, 0.015f},
+		100, 100);
+	shadow_overlay_plane.initialize_data_on_gpu(shadow_overlay_mesh, shadow_shader);
+
 	quad1.initialize_data_on_gpu(quad_mesh);
 	quad1.shader.load(project::path + "shaders/instancing/instancing.vert.glsl", project::path + "shaders/instancing/instancing.frag.glsl");
 
@@ -288,10 +319,46 @@ void scene_structure::reset_objects()
 	physics.set_object_count(gui.num_objects);
 	physics.reset_objects(gui.vertical_spacing, gui.horizontal_variance);
 	int const new_total = physics.object_count() * template_splat_count;
+	shadow_object_positions.resize(0);
+	shadow_object_rotations.resize(0);
+	sync_shadow_transforms();
 	if (new_total != old_total)
 		rebuild_splat_gpu_buffers();
 	else
 		update_splats_from_physics();
+}
+
+void scene_structure::sync_shadow_transforms()
+{
+	int const num_objects = physics.object_count();
+	if (num_objects <= 0) {
+		shadow_object_positions.resize(0);
+		shadow_object_rotations.resize(0);
+		return;
+	}
+
+	if (shadow_object_positions.size() != num_objects) {
+		shadow_object_positions.resize(num_objects);
+		shadow_object_rotations.resize(num_objects);
+		for (int i = 0; i < num_objects; ++i) {
+			shadow_object_positions[i] = physics.get_position(i);
+			shadow_object_rotations[i] = physics.get_rotation(i);
+		}
+		return;
+	}
+
+	float const blend = shadow_transform_blend;
+	for (int i = 0; i < num_objects; ++i) {
+		vec3 const target_position = physics.get_position(i);
+		shadow_object_positions[i] = (1.0f - blend) * shadow_object_positions[i] + blend * target_position;
+
+		mat3 const target_rotation = physics.get_rotation(i);
+		mat3& smoothed_rotation = shadow_object_rotations[i];
+		for (int r = 0; r < 3; ++r) {
+			for (int c = 0; c < 3; ++c)
+				smoothed_rotation(r, c) = (1.0f - blend) * smoothed_rotation(r, c) + blend * target_rotation(r, c);
+		}
+	}
 }
 
 void scene_structure::fill_splats_from_physics()
@@ -420,17 +487,16 @@ void scene_structure::rebuild_splat_gpu_buffers()
 // Note that you should avoid having costly computation and large allocation defined there. This function is mostly used to call the draw() functions on pre-existing data.
 void scene_structure::display_frame()
 {
-	// Set the light to the current position of the camera
 	camera_projection.aspect_ratio = window.aspect_ratio();
 	environment.camera_projection = camera_projection.matrix();
 	environment.camera_view = camera_control.camera_model.matrix_view();
-	environment.light = camera_control.camera_model.position();
 
 	// Draw the 3D reference frame axes if enabled
 	if (gui.display_frame)
 		draw(global_frame, environment);
 
 	draw(table_plane, environment);
+	display_shadows();
 
 	// Update time
 	timer.update();
@@ -568,6 +634,62 @@ void scene_structure::display_frame()
 }
 
 
+void scene_structure::display_shadows()
+{
+	mat4 const shadow_matrix = build_planar_shadow_matrix(environment.light);
+
+	int const num_objects = physics.object_count();
+	if (shadow_object_positions.size() != num_objects)
+		return;
+
+	GLboolean const cull_was_enabled = glIsEnabled(GL_CULL_FACE);
+	GLboolean const stencil_was_enabled = glIsEnabled(GL_STENCIL_TEST);
+	if (cull_was_enabled)
+		glDisable(GL_CULL_FACE);
+
+	uniform_generic_structure shadow_uniforms;
+	shadow_uniforms.uniform_vec3["color"] = {0.04f, 0.04f, 0.04f};
+	shadow_uniforms.uniform_float["alpha"] = 0.40f;
+
+	// Pass 1: mark shadow coverage in stencil (at most one bit per pixel, regardless of triangle overlap).
+	glEnable(GL_STENCIL_TEST);
+	glStencilMask(0xFF);
+	glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+	glEnable(GL_DEPTH_TEST);
+	glDepthFunc(GL_LEQUAL);
+	glDepthMask(GL_FALSE);
+	glStencilFunc(GL_ALWAYS, 1, 0xFF);
+	glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+
+	for (int object_index = 0; object_index < num_objects; ++object_index) {
+		mat3 const R = shadow_object_rotations[object_index];
+		vec3 const T = shadow_object_positions[object_index];
+		mat4 const object_matrix = affine_rt(rotation_transform::from_matrix(R), T).matrix();
+		shadow_mesh.supplementary_model_matrix = shadow_matrix * object_matrix;
+		shadow_mesh.model = affine();
+		draw(shadow_mesh, environment, 1, false, shadow_uniforms);
+	}
+
+	// Pass 2: paint uniform shadow color once on all marked table pixels.
+	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+	glStencilFunc(GL_EQUAL, 1, 0xFF);
+	glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+	glEnable(GL_BLEND);
+	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+	shadow_overlay_plane.supplementary_model_matrix = mat4::build_identity();
+	shadow_overlay_plane.model = affine();
+	draw(shadow_overlay_plane, environment, 1, true, shadow_uniforms);
+
+	glDepthMask(GL_TRUE);
+	glDepthFunc(GL_LESS);
+	glDisable(GL_STENCIL_TEST);
+	if (stencil_was_enabled)
+		glEnable(GL_STENCIL_TEST);
+	if (cull_was_enabled)
+		glEnable(GL_CULL_FACE);
+}
+
 void scene_structure::display_gui()
 {
 	ImGui::Checkbox("Frame", &gui.display_frame);
@@ -703,6 +825,7 @@ void scene_structure::idle_frame()
 	if (grab.active)
 		physics.set_rotation(grab.body_index, grab.locked_rotation);
 
+	sync_shadow_transforms();
 	update_splats_from_physics();
 }
 

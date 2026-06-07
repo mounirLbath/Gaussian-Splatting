@@ -41,3 +41,9 @@ void read_mesh_vertices_from_ply_file(
     const std::string& filepath,
     cgp::numarray<cgp::vec3>& vertices
 );
+
+// Read a triangle mesh (vertices + faces) from a PLY file.
+void read_mesh_from_ply_file(
+    const std::string& filepath,
+    cgp::mesh& mesh
+);
