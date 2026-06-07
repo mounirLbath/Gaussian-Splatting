@@ -222,7 +222,7 @@ void scene_structure::initialize()
 	// Initialize the shapes of the scene
 	// ***************************************** //
 
-	gui.display_frame = true;
+	gui.display_frame = false;
 
 	mesh quad_mesh = mesh_primitive_quadrangle(
 		{ -1,-1,0 },
@@ -264,10 +264,10 @@ void scene_structure::initialize()
 		{-200.0f,  200.0f, 0.0f},
 		100, 100);
 	table_plane.initialize_data_on_gpu(table_mesh);
-	table_plane.material.color = {0.45f, 0.45f, 0.45f};
-	table_plane.material.phong.ambient = 0.2f;
-	table_plane.material.phong.diffuse = 0.6f;
-	table_plane.material.phong.specular = 0.1f;
+	table_plane.material.color = {1.0f, 1.0f, 1.0f};
+	table_plane.material.phong.ambient = 0.18f;
+	table_plane.material.phong.diffuse = 0.82f;
+	table_plane.material.phong.specular = 0.05f;
 	table_plane.material.texture_settings.two_sided = true;
 
 	quad1.initialize_data_on_gpu(quad_mesh);
@@ -617,13 +617,6 @@ bool scene_structure::validate_camera_move(vec3 const& from, vec3 const& to) con
 	if (!physics.can_move_camera(from, to, exclude))
 		return false;
 
-	if (grab.active) {
-		vec3 const front = camera_control.camera_model.front();
-		vec3 const obj_pos = physics.get_position(grab.body_index);
-		vec3 const target_obj = to + grab.distance * front;
-		if (!physics.can_move_object(grab.body_index, obj_pos, target_obj))
-			return false;
-	}
 	return true;
 }
 
@@ -664,6 +657,7 @@ void scene_structure::try_start_grab()
 	grab.body_index = hit.body_index;
 	grab.distance = std::max(hit.distance, 0.5f);
 	grab.locked_rotation = physics.get_rotation(hit.body_index);
+	physics.activate_all();
 }
 
 void scene_structure::release_grab()
@@ -677,24 +671,19 @@ void scene_structure::update_grabbed_object()
 	if (!grab.active || grab.body_index < 0)
 		return;
 
+	physics.activate_all();
+
 	vec3 const camera_pos = camera_control.camera_model.position();
 	vec3 const front = camera_control.camera_model.front();
 	vec3 const target = camera_pos + grab.distance * front;
 	vec3 const current = physics.get_position(grab.body_index);
 
-	if (physics.can_move_object(grab.body_index, current, target)) {
-		vec3 vel = (target - current) * grab_pull_strength;
-		float const speed = norm(vel);
-		if (speed > grab_max_speed)
-			vel = vel * (grab_max_speed / speed);
-		physics.set_linear_velocity(grab.body_index, vel);
-	}
-	else {
-		physics.set_linear_velocity(grab.body_index, {0, 0, 0});
-	}
-
+	vec3 vel = (target - current) * grab_pull_strength;
+	float const speed = norm(vel);
+	if (speed > grab_max_speed)
+		vel = vel * (grab_max_speed / speed);
+	physics.set_linear_velocity(grab.body_index, vel);
 	physics.set_angular_velocity(grab.body_index, {0, 0, 0});
-	physics.set_rotation(grab.body_index, grab.locked_rotation);
 }
 
 void scene_structure::idle_frame()

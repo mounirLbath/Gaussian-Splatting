@@ -341,3 +341,11 @@ void physics_world::set_rotation(int index, cgp::mat3 rotation)
 	bodies[index]->getMotionState()->setWorldTransform(transform);
 	bodies[index]->setAngularVelocity(btVector3(0, 0, 0));
 }
+
+void physics_world::activate_all()
+{
+	for (auto* body : bodies) {
+		if (body)
+			body->activate(true);
+	}
+}

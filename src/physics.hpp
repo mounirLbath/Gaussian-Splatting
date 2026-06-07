@@ -31,6 +31,7 @@ struct physics_world {
 	void set_linear_velocity(int index, cgp::vec3 velocity);
 	void set_angular_velocity(int index, cgp::vec3 velocity);
 	void set_rotation(int index, cgp::mat3 rotation);
+	void activate_all();
 
 private:
 	bool convex_sweep_blocked(btCollisionShape* shape, cgp::mat3 const& rotation,
