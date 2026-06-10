@@ -9,6 +9,75 @@
 using namespace cgp;
 
 namespace {
+// Explicit GL error check used in the Phase 1 GPU pipeline so we can localize
+// which call leaks an error (rather than being caught later by cgp::draw).
+inline void check_gl(char const* tag)
+{
+	GLenum const e = glGetError();
+	if (e != GL_NO_ERROR) {
+		std::cerr << "[gl-error] " << tag << " -> 0x" << std::hex << e << std::dec << std::endl;
+	}
+}
+} // namespace
+
+
+// ---------------------------------------------------------------------------
+// Phase 0: profiling helpers
+// ---------------------------------------------------------------------------
+
+void gpu_timer_scope::initialize()
+{
+	glGenQueries(2, queries);
+}
+void gpu_timer_scope::destroy()
+{
+	if (queries[0]) glDeleteQueries(2, queries);
+	queries[0] = queries[1] = 0;
+	has_pending = false;
+}
+void gpu_timer_scope::begin()
+{
+	glBeginQuery(GL_TIME_ELAPSED, queries[write_index]);
+}
+void gpu_timer_scope::end()
+{
+	glEndQuery(GL_TIME_ELAPSED);
+	has_pending = true;
+}
+void gpu_timer_scope::resolve()
+{
+	// Read the OTHER buffer (last frame's result) so we never stall.
+	int const read_index = 1 - write_index;
+	GLint available = 0;
+	glGetQueryObjectiv(queries[read_index], GL_QUERY_RESULT_AVAILABLE, &available);
+	if (available) {
+		GLuint64 ns = 0;
+		glGetQueryObjectui64v(queries[read_index], GL_QUERY_RESULT, &ns);
+		last_ms = double(ns) * 1.0e-6;
+	}
+	write_index = read_index;
+}
+
+void frame_profiler::initialize()
+{
+	gpu_project.initialize();
+	gpu_sort.initialize();
+	gpu_draw.initialize();
+}
+void frame_profiler::destroy()
+{
+	gpu_project.destroy();
+	gpu_sort.destroy();
+	gpu_draw.destroy();
+}
+void frame_profiler::resolve_all()
+{
+	gpu_project.resolve();
+	gpu_sort.resolve();
+	gpu_draw.resolve();
+}
+
+namespace {
 
 constexpr size_t radix_block_size = 128u * 4u;
 
@@ -261,6 +330,83 @@ void scene_structure::initialize()
 	bind_ssbo(ssbo_indirect_draw, 10);
 
 
+	// =======================================================================
+	// Phase 1: GPU projection + visibility + indirect draw
+	// =======================================================================
+	{
+		// Per-splat record: 3 vec4 + 1 uvec4 = 64 bytes. Match the layout in project.comp.glsl.
+		size_t const record_bytes = 4u * sizeof(float) * 4u; // 4 vec4 (last is uvec4)
+		glGenBuffers(1, &ssbo_view_data);
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_view_data);
+		glBufferData(GL_SHADER_STORAGE_BUFFER,
+			GLsizeiptr(n) * GLsizeiptr(record_bytes),
+			nullptr, GL_DYNAMIC_DRAW);
+
+		glGenBuffers(1, &ssbo_visible_indices);
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_visible_indices);
+		glBufferData(GL_SHADER_STORAGE_BUFFER,
+			GLsizeiptr(n) * GLsizeiptr(sizeof(GLuint)),
+			nullptr, GL_DYNAMIC_DRAW);
+
+		glGenBuffers(1, &ssbo_indirect_draw);
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_indirect_draw);
+		DrawElementsIndirectCommand_t const cmd0 = { 6u, 0u, 0u, 0u, 0u };
+		glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(cmd0), &cmd0, GL_DYNAMIC_DRAW);
+
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+		// Bind to compute-shader binding points.
+		bind_ssbo(ssbo_view_data,       5);
+		bind_ssbo(ssbo_visible_indices, 6);
+		bind_ssbo(ssbo_indirect_draw,   8);
+
+		// Programs.
+		program_project = load_compute_program(project::path + "shaders/instancing/project.comp.glsl");
+		program_splat   = load_graphics_program(
+			project::path + "shaders/instancing/splat.vert.glsl",
+			project::path + "shaders/instancing/splat.frag.glsl");
+		assert_cgp(program_project != 0, "Failed to load project.comp.glsl");
+		assert_cgp(program_splat   != 0, "Failed to load splat.vert.glsl/splat.frag.glsl");
+
+		// Phase 2 radix sort programs.
+		program_radix_histogram = load_compute_program(project::path + "shaders/instancing/radix_histogram.comp.glsl");
+		program_radix_block_prefix = load_compute_program(project::path + "shaders/instancing/radix_block_prefix.comp.glsl");
+		program_radix_bin_prefix = load_compute_program(project::path + "shaders/instancing/radix_bin_prefix.comp.glsl");
+		program_radix_scatter = load_compute_program(project::path + "shaders/instancing/radix_scatter.comp.glsl");
+		assert_cgp(program_radix_histogram != 0, "Failed to load radix_histogram.comp.glsl");
+		assert_cgp(program_radix_block_prefix != 0, "Failed to load radix_block_prefix.comp.glsl");
+		assert_cgp(program_radix_bin_prefix != 0, "Failed to load radix_bin_prefix.comp.glsl");
+		assert_cgp(program_radix_scatter != 0, "Failed to load radix_scatter.comp.glsl");
+
+		// Phase 2 radix sort buffers.
+		radix_block_count_max = (GLuint(n) + radix_block_size - 1u) / radix_block_size;
+		glGenBuffers(1, &ssbo_sort_a);
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_sort_a);
+		glBufferData(GL_SHADER_STORAGE_BUFFER, GLsizeiptr(n) * GLsizeiptr(sizeof(GLuint)), nullptr, GL_DYNAMIC_DRAW);
+		glGenBuffers(1, &ssbo_sort_b);
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_sort_b);
+		glBufferData(GL_SHADER_STORAGE_BUFFER, GLsizeiptr(n) * GLsizeiptr(sizeof(GLuint)), nullptr, GL_DYNAMIC_DRAW);
+		glGenBuffers(1, &ssbo_radix_hist);
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_radix_hist);
+		glBufferData(GL_SHADER_STORAGE_BUFFER, GLsizeiptr(radix_block_count_max) * GLsizeiptr(256u) * GLsizeiptr(sizeof(GLuint)), nullptr, GL_DYNAMIC_DRAW);
+		glGenBuffers(1, &ssbo_radix_bins);
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_radix_bins);
+		glBufferData(GL_SHADER_STORAGE_BUFFER, GLsizeiptr(256u) * GLsizeiptr(sizeof(GLuint)), nullptr, GL_DYNAMIC_DRAW);
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+		// Quad geometry for the GPU draw path.
+		create_unit_quad(quad_vao, quad_vbo, quad_ebo);
+
+		// Profiler.
+		profiler.initialize();
+		profiler.splat_count = n;
+
+		// Drain any leftover GL error from setup so the per-frame opengl_check macros
+		// inside cgp::draw don't fire on a stale error from init.
+		while (glGetError() != GL_NO_ERROR) {}
+	}
+
+
 	std::cout << "End function scene_structure::initialize()" << std::endl;
 
 }
@@ -272,6 +418,10 @@ void scene_structure::initialize()
 // Note that you should avoid having costly computation and large allocation defined there. This function is mostly used to call the draw() functions on pre-existing data.
 void scene_structure::display_frame()
 {
+	// Drain stale GL errors at frame start so localized check_gl() calls and CGP's
+	// opengl_check macro inside cgp::draw report only this frame's errors.
+	while (glGetError() != GL_NO_ERROR) {}
+
 	// Set the light to the current position of the camera
 	camera_projection.aspect_ratio = window.aspect_ratio();
 	environment.camera_projection = camera_projection.matrix();
@@ -413,6 +563,9 @@ void scene_structure::display_frame()
 		draw_mesh_indirect(quad1, environment, ssbo_indirect_draw);
 	}
 
+	// Resolve double-buffered GPU timer queries (fetch the previous frame's results).
+	profiler.resolve_all();
+
 	glDepthMask(true);
 	glDisable(GL_BLEND);
 }
@@ -452,11 +605,43 @@ void scene_structure::keyboard_event()
 {
 	camera_control.action_keyboard();
 }
+void scene_structure::apply_keyboard_camera_navigation()
+{
+	if (ImGui::GetIO().WantCaptureKeyboard)
+		return;
+
+	float const magnitude = gui.camera_move_speed * inputs.time_interval;
+	auto const key_down = [this](int key) {
+		return glfwGetKey(window.glfw_window, key) == GLFW_PRESS;
+	};
+
+	bool const shift_down = key_down(GLFW_KEY_LEFT_SHIFT) || key_down(GLFW_KEY_RIGHT_SHIFT);
+	bool const zoom_in = (!shift_down && key_down(GLFW_KEY_R)) || key_down(GLFW_KEY_UP);
+	bool const zoom_out = (!shift_down && key_down(GLFW_KEY_F)) || key_down(GLFW_KEY_DOWN);
+	bool const move_up = key_down(GLFW_KEY_Z) || key_down(GLFW_KEY_W);
+	bool const move_down = key_down(GLFW_KEY_S);
+	bool const move_left = key_down(GLFW_KEY_A) || key_down(GLFW_KEY_Q) || (!shift_down && key_down(GLFW_KEY_LEFT));
+	bool const move_right = key_down(GLFW_KEY_D) || (!shift_down && key_down(GLFW_KEY_RIGHT));
+
+	if (zoom_in)
+		camera_control.camera_model.manipulator_translate_front(-magnitude);
+	if (zoom_out)
+		camera_control.camera_model.manipulator_translate_front(magnitude);
+	if (move_up)
+		camera_control.camera_model.manipulator_translate_in_plane({ 0.0f, -magnitude });
+	if (move_down)
+		camera_control.camera_model.manipulator_translate_in_plane({ 0.0f, magnitude });
+	if (move_left)
+		camera_control.camera_model.manipulator_translate_in_plane({ magnitude, 0.0f });
+	if (move_right)
+		camera_control.camera_model.manipulator_translate_in_plane({ -magnitude, 0.0f });
+}
 void scene_structure::idle_frame()
 {
 	if (animation_mode)
 		update_camera_animation(inputs.time_interval);
 	camera_control.idle_frame();
+	apply_keyboard_camera_navigation();
 	
 }
 
@@ -482,6 +667,8 @@ void scene_structure::display_info()
 	std::cout << "\nCAMERA CONTROL:" << std::endl;
 	std::cout << "-----------------------------------------------" << std::endl;
 	std::cout << camera_control.doc_usage() << std::endl;
+	std::cout << "  Keyboard navigation: R/Up zoom in, F/Down zoom out, Z/W up, S down, A/Q/Left left, D/Right right." << std::endl;
+	std::cout << "  Use the GUI Camera speed slider to adjust movement speed." << std::endl;
 	std::cout << "-----------------------------------------------\n" << std::endl;
 
 
