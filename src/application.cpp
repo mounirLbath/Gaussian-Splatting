@@ -81,9 +81,6 @@ void application_structure::initialize_window()
     cgp::imgui_init(s.window.glfw_window);
     glfwSetWindowUserPointer(s.window.glfw_window, this);
 
-    // Apply the configured vsync default (CGP enables vsync internally; respect project::vsync).
-    glfwSwapInterval(project::vsync ? 1 : 0);
-
     // Register callbacks so GLFW can route events back to this instance.
     setup_callbacks();
 }

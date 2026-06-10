@@ -1,81 +1,16 @@
 #include "scene.hpp"
 #include "helper.hpp"
 
-#include <chrono>
-#include <utility>
+#include <algorithm>
+#include <cmath>
+#include <fstream>
+#include <sstream>
 
 using namespace cgp;
 
 namespace {
-// Explicit GL error check used in the Phase 1 GPU pipeline so we can localize
-// which call leaks an error (rather than being caught later by cgp::draw).
-inline void check_gl(char const* tag)
-{
-	GLenum const e = glGetError();
-	if (e != GL_NO_ERROR) {
-		std::cerr << "[gl-error] " << tag << " -> 0x" << std::hex << e << std::dec << std::endl;
-	}
-}
-} // namespace
 
-
-// ---------------------------------------------------------------------------
-// Phase 0: profiling helpers
-// ---------------------------------------------------------------------------
-
-void gpu_timer_scope::initialize()
-{
-	glGenQueries(2, queries);
-}
-void gpu_timer_scope::destroy()
-{
-	if (queries[0]) glDeleteQueries(2, queries);
-	queries[0] = queries[1] = 0;
-	has_pending = false;
-}
-void gpu_timer_scope::begin()
-{
-	glBeginQuery(GL_TIME_ELAPSED, queries[write_index]);
-}
-void gpu_timer_scope::end()
-{
-	glEndQuery(GL_TIME_ELAPSED);
-	has_pending = true;
-}
-void gpu_timer_scope::resolve()
-{
-	// Read the OTHER buffer (last frame's result) so we never stall.
-	int const read_index = 1 - write_index;
-	GLint available = 0;
-	glGetQueryObjectiv(queries[read_index], GL_QUERY_RESULT_AVAILABLE, &available);
-	if (available) {
-		GLuint64 ns = 0;
-		glGetQueryObjectui64v(queries[read_index], GL_QUERY_RESULT, &ns);
-		last_ms = double(ns) * 1.0e-6;
-	}
-	write_index = read_index;
-}
-
-void frame_profiler::initialize()
-{
-	gpu_project.initialize();
-	gpu_sort.initialize();
-	gpu_draw.initialize();
-}
-void frame_profiler::destroy()
-{
-	gpu_project.destroy();
-	gpu_sort.destroy();
-	gpu_draw.destroy();
-}
-void frame_profiler::resolve_all()
-{
-	gpu_project.resolve();
-	gpu_sort.resolve();
-	gpu_draw.resolve();
-}
-
-namespace {
+constexpr size_t radix_block_size = 128u * 4u;
 
 	numarray<vec4> pad_vec3_to_vec4(numarray<vec3> const& src)
 {
@@ -89,9 +24,9 @@ namespace {
 	return out;
 }
 
-// Create a SSBO and upload the given array to it.
+// Create a SSBO and upload the given array to it (static data).
 template <typename T>
-void create_ssbo(GLuint& ssbo, numarray<T> const& data)
+void create_static_ssbo(GLuint& ssbo, numarray<T> const& data)
 {
 	if (data.size() <= 0)
 		return;
@@ -111,6 +46,16 @@ void bind_ssbo(GLuint ssbo, GLuint binding_point)
 	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, binding_point, ssbo);
 }
 
+void create_dynamic_ssbo(GLuint& ssbo, size_t count, size_t elem_size)
+{
+	if (count == 0)
+		return;
+	glGenBuffers(1, &ssbo);
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+	glBufferData(GL_SHADER_STORAGE_BUFFER, GLsizeiptr(count) * GLsizeiptr(elem_size), nullptr, GL_DYNAMIC_DRAW);
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+}
+
 void setup_instance_index_vao(GLuint vao, GLuint index_vbo, int location)
 {
 	glBindVertexArray(vao);
@@ -121,44 +66,75 @@ void setup_instance_index_vao(GLuint vao, GLuint index_vbo, int location)
 	glBindVertexArray(0);
 }
 
-
-// Phase 1: set up a minimal unit-quad VAO/VBO/EBO used by the GPU pipeline.
-//   - location 0: vec2 in [-1, 1]^2
-//   - 6 indices for two triangles
-void create_unit_quad(GLuint& vao, GLuint& vbo, GLuint& ebo)
+struct DrawElementsIndirectCommand
 {
-	float const verts[8] = {
-		-1.f, -1.f,
-		 1.f, -1.f,
-		 1.f,  1.f,
-		-1.f,  1.f,
-	};
-	unsigned int const idx[6] = { 0u, 1u, 2u, 0u, 2u, 3u };
-
-	glGenVertexArrays(1, &vao);
-	glGenBuffers(1, &vbo);
-	glGenBuffers(1, &ebo);
-
-	glBindVertexArray(vao);
-
-	glBindBuffer(GL_ARRAY_BUFFER, vbo);
-	glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
-	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
-	glEnableVertexAttribArray(0);
-
-	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
-	glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(idx), idx, GL_STATIC_DRAW);
-
-	glBindVertexArray(0);
-}
-
-struct DrawElementsIndirectCommand_t {
 	GLuint count;
 	GLuint instanceCount;
 	GLuint firstIndex;
-	GLuint baseVertex;
+	GLint baseVertex;
 	GLuint baseInstance;
 };
+
+// Minimal equivalent of cgp::draw() for an indirect instanced draw.
+// The instance count lives in `indirect_buffer` and is filled on the GPU from
+// the visible-splat counter, so the CPU does not need to read visible_count.
+void draw_mesh_indirect(mesh_drawable const& drawable, environment_generic_structure const& environment, GLuint indirect_buffer, GLenum draw_mode = GL_TRIANGLES)
+{
+	bool expected_uniforms = true;
+
+	// Send the same standard uniforms/textures as the normal cgp draw path.
+	glUseProgram(drawable.shader.id);
+
+	drawable.send_opengl_uniform(expected_uniforms); // per-drawable uniforms
+	environment.send_opengl_uniform(drawable.shader, expected_uniforms && environment.default_expected_uniform); // per-frame uniforms
+
+	
+	glActiveTexture(GL_TEXTURE0); // base texture unit
+	drawable.texture.bind();
+	opengl_uniform(drawable.shader, "image_texture", 0, expected_uniforms);
+
+	int texture_count = 1; // extra textures start at unit 1
+	for (auto const& element : drawable.supplementary_texture) {
+		std::string const& additional_texture_name = element.first;
+		opengl_texture_image_structure const& additional_texture = element.second;
+		glActiveTexture(GL_TEXTURE0 + texture_count);
+		additional_texture.bind();
+		opengl_uniform(drawable.shader, additional_texture_name, texture_count, expected_uniforms);
+		texture_count++;
+	}
+
+	// Draw once per visible sorted instance using the indirect command.
+	glBindVertexArray(drawable.vao);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, drawable.ebo_connectivity.id); // index buffer
+	glBindBuffer(GL_DRAW_INDIRECT_BUFFER, indirect_buffer); // count + instanceCount
+	glDrawElementsIndirect(draw_mode, GL_UNSIGNED_INT, nullptr);
+	glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
+	glBindVertexArray(0);
+	glUseProgram(0);
+}
+
+GLuint load_compute_program(std::string const& path)
+{
+	// Open and read the shader source code from file
+	std::ifstream file(path);
+	std::ostringstream buffer;
+	buffer << file.rdbuf();
+	std::string const source = buffer.str();
+
+	// Compile the single compute shader object.
+	GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
+	char const* src = source.c_str();
+	glShaderSource(shader, 1, &src, nullptr);
+	glCompileShader(shader);
+
+	// Create the program, attach the shader, and link.
+	GLuint program = glCreateProgram();
+	glAttachShader(program, shader);
+	glLinkProgram(program);
+	glDeleteShader(shader);
+
+	return program;
+}
 
 } // namespace
 
@@ -232,10 +208,37 @@ void scene_structure::initialize()
 	// Upload per-splat data to SSBOs. Points and colors are padded to vec4
 	numarray<vec4> const pos4 = pad_vec3_to_vec4(splat_points);
 	numarray<vec4> const col4 = pad_vec3_to_vec4(splat_colors);
-	create_ssbo(ssbo_points, pos4);
-	create_ssbo(ssbo_colors, col4);
-	create_ssbo(ssbo_covariances, splat_covariances);
-	create_ssbo(ssbo_opacities, splat_opacities);
+	create_static_ssbo(ssbo_points, pos4);
+	create_static_ssbo(ssbo_colors, col4);
+	create_static_ssbo(ssbo_covariances, splat_covariances);
+	create_static_ssbo(ssbo_opacities, splat_opacities);
+	create_dynamic_ssbo(ssbo_depth_keys, n, sizeof(unsigned int));
+	create_dynamic_ssbo(ssbo_sort_ping, n, sizeof(unsigned int) * 2u);
+	create_dynamic_ssbo(ssbo_sort_pong, n, sizeof(unsigned int) * 2u);
+	size_t const radix_block_count_max = (size_t(n) + radix_block_size - 1u) / radix_block_size;
+	create_dynamic_ssbo(ssbo_radix_hist, radix_block_count_max * 256u, sizeof(unsigned int));
+	create_dynamic_ssbo(ssbo_radix_prefix, 256, sizeof(unsigned int));
+	create_dynamic_ssbo(ssbo_indirect_draw, 5, sizeof(unsigned int));
+
+	// Set up the indirect draw parameters.
+	DrawElementsIndirectCommand indirect_cmd = {};
+	indirect_cmd.count = GLuint(quad1.ebo_connectivity.size * 3);
+	indirect_cmd.instanceCount = GLuint(splat_points.size());
+	indirect_cmd.firstIndex = 0u;
+	indirect_cmd.baseVertex = 0;
+	indirect_cmd.baseInstance = 0u;
+	glBindBuffer(GL_DRAW_INDIRECT_BUFFER, ssbo_indirect_draw);
+	glBufferSubData(GL_DRAW_INDIRECT_BUFFER, 0, sizeof(DrawElementsIndirectCommand), &indirect_cmd);
+	glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
+
+	// Load the radix sort shader.
+	compute_radix_program = load_compute_program(project::path + "shaders/compute/radix_sort.comp.glsl");
+
+
+	glGenBuffers(1, &ssbo_visible_counter);
+	glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, ssbo_visible_counter);
+	glBufferData(GL_ATOMIC_COUNTER_BUFFER, sizeof(unsigned int), nullptr, GL_DYNAMIC_DRAW);
+	glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, 0);
 
 	glGenBuffers(1, &vbo_indices);
 	glBindBuffer(GL_ARRAY_BUFFER, vbo_indices);
@@ -249,83 +252,13 @@ void scene_structure::initialize()
 	bind_ssbo(ssbo_colors, 1);
 	bind_ssbo(ssbo_covariances, 2);
 	bind_ssbo(ssbo_opacities, 3);
-
-
-	// =======================================================================
-	// Phase 1: GPU projection + visibility + indirect draw
-	// =======================================================================
-	{
-		// Per-splat record: 3 vec4 + 1 uvec4 = 64 bytes. Match the layout in project.comp.glsl.
-		size_t const record_bytes = 4u * sizeof(float) * 4u; // 4 vec4 (last is uvec4)
-		glGenBuffers(1, &ssbo_view_data);
-		glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_view_data);
-		glBufferData(GL_SHADER_STORAGE_BUFFER,
-			GLsizeiptr(n) * GLsizeiptr(record_bytes),
-			nullptr, GL_DYNAMIC_DRAW);
-
-		glGenBuffers(1, &ssbo_visible_indices);
-		glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_visible_indices);
-		glBufferData(GL_SHADER_STORAGE_BUFFER,
-			GLsizeiptr(n) * GLsizeiptr(sizeof(GLuint)),
-			nullptr, GL_DYNAMIC_DRAW);
-
-		glGenBuffers(1, &ssbo_indirect_draw);
-		glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_indirect_draw);
-		DrawElementsIndirectCommand_t const cmd0 = { 6u, 0u, 0u, 0u, 0u };
-		glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(cmd0), &cmd0, GL_DYNAMIC_DRAW);
-
-		glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-
-		// Bind to compute-shader binding points.
-		bind_ssbo(ssbo_view_data,       5);
-		bind_ssbo(ssbo_visible_indices, 6);
-		bind_ssbo(ssbo_indirect_draw,   8);
-
-		// Programs.
-		program_project = load_compute_program(project::path + "shaders/instancing/project.comp.glsl");
-		program_splat   = load_graphics_program(
-			project::path + "shaders/instancing/splat.vert.glsl",
-			project::path + "shaders/instancing/splat.frag.glsl");
-		assert_cgp(program_project != 0, "Failed to load project.comp.glsl");
-		assert_cgp(program_splat   != 0, "Failed to load splat.vert.glsl/splat.frag.glsl");
-
-		// Phase 2 radix sort programs.
-		program_radix_histogram = load_compute_program(project::path + "shaders/instancing/radix_histogram.comp.glsl");
-		program_radix_block_prefix = load_compute_program(project::path + "shaders/instancing/radix_block_prefix.comp.glsl");
-		program_radix_bin_prefix = load_compute_program(project::path + "shaders/instancing/radix_bin_prefix.comp.glsl");
-		program_radix_scatter = load_compute_program(project::path + "shaders/instancing/radix_scatter.comp.glsl");
-		assert_cgp(program_radix_histogram != 0, "Failed to load radix_histogram.comp.glsl");
-		assert_cgp(program_radix_block_prefix != 0, "Failed to load radix_block_prefix.comp.glsl");
-		assert_cgp(program_radix_bin_prefix != 0, "Failed to load radix_bin_prefix.comp.glsl");
-		assert_cgp(program_radix_scatter != 0, "Failed to load radix_scatter.comp.glsl");
-
-		// Phase 2 radix sort buffers.
-		radix_block_count_max = (GLuint(n) + radix_block_size - 1u) / radix_block_size;
-		glGenBuffers(1, &ssbo_sort_a);
-		glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_sort_a);
-		glBufferData(GL_SHADER_STORAGE_BUFFER, GLsizeiptr(n) * GLsizeiptr(sizeof(GLuint)), nullptr, GL_DYNAMIC_DRAW);
-		glGenBuffers(1, &ssbo_sort_b);
-		glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_sort_b);
-		glBufferData(GL_SHADER_STORAGE_BUFFER, GLsizeiptr(n) * GLsizeiptr(sizeof(GLuint)), nullptr, GL_DYNAMIC_DRAW);
-		glGenBuffers(1, &ssbo_radix_hist);
-		glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_radix_hist);
-		glBufferData(GL_SHADER_STORAGE_BUFFER, GLsizeiptr(radix_block_count_max) * GLsizeiptr(256u) * GLsizeiptr(sizeof(GLuint)), nullptr, GL_DYNAMIC_DRAW);
-		glGenBuffers(1, &ssbo_radix_bins);
-		glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_radix_bins);
-		glBufferData(GL_SHADER_STORAGE_BUFFER, GLsizeiptr(256u) * GLsizeiptr(sizeof(GLuint)), nullptr, GL_DYNAMIC_DRAW);
-		glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-
-		// Quad geometry for the GPU draw path.
-		create_unit_quad(quad_vao, quad_vbo, quad_ebo);
-
-		// Profiler.
-		profiler.initialize();
-		profiler.splat_count = n;
-
-		// Drain any leftover GL error from setup so the per-frame opengl_check macros
-		// inside cgp::draw don't fire on a stale error from init.
-		while (glGetError() != GL_NO_ERROR) {}
-	}
+	bind_ssbo(ssbo_depth_keys, 4);
+	glBindBufferBase(GL_ATOMIC_COUNTER_BUFFER, 5, ssbo_visible_counter);
+	bind_ssbo(ssbo_sort_ping, 6);
+	bind_ssbo(ssbo_sort_pong, 7);
+	bind_ssbo(ssbo_radix_hist, 8);
+	bind_ssbo(ssbo_radix_prefix, 9);
+	bind_ssbo(ssbo_indirect_draw, 10);
 
 
 	std::cout << "End function scene_structure::initialize()" << std::endl;
@@ -339,12 +272,8 @@ void scene_structure::initialize()
 // Note that you should avoid having costly computation and large allocation defined there. This function is mostly used to call the draw() functions on pre-existing data.
 void scene_structure::display_frame()
 {
-	// Drain stale GL errors at frame start so localized check_gl() calls and CGP's
-	// opengl_check macro inside cgp::draw report only this frame's errors.
-	while (glGetError() != GL_NO_ERROR) {}
-
 	// Set the light to the current position of the camera
-    camera_projection.aspect_ratio = window.aspect_ratio();
+	camera_projection.aspect_ratio = window.aspect_ratio();
 	environment.camera_projection = camera_projection.matrix();
 	environment.camera_view = camera_control.camera_model.matrix_view();
 	environment.light = camera_control.camera_model.position();
@@ -358,173 +287,131 @@ void scene_structure::display_frame()
 
 	// send alpha_cutoff uniform 
 	environment.uniform_generic.uniform_float["alpha_cutoff"] = gui.alpha_cutoff;
+	environment.uniform_generic.uniform_int["depth_bits"] = gui.depth_bits;
+	environment.uniform_generic.uniform_int["prepass_only"] = 0;
 
 	glEnable(GL_BLEND);
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 	glDepthMask(false);
 
-	int const n = splat_points.size();
-	if (n > 0) {
-		if (use_gpu_pipeline) {
-			// ---------------- Phase 1: GPU pipeline ----------------
-			// Drain any prior pending error so localized checks below are meaningful.
-			(void)glGetError();
-
-			// 1) Reset the indirect-draw command (instanceCount==0 acts as the atomic counter).
-			glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_indirect_draw);
-			DrawElementsIndirectCommand_t const cmd0 = { 6u, 0u, 0u, 0u, 0u };
-			glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(cmd0), &cmd0);
-			glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-			check_gl("reset indirect cmd");
-
-			// 2) Run the projection compute shader.
-			profiler.gpu_project.begin();
-			glUseProgram(program_project);                           check_gl("useProgram project");
-			bind_ssbo(ssbo_points,          0);
-			bind_ssbo(ssbo_colors,          1);
-			bind_ssbo(ssbo_covariances,     2);
-			bind_ssbo(ssbo_opacities,       3);
-			bind_ssbo(ssbo_view_data,       5);
-			bind_ssbo(ssbo_visible_indices, 6);
-			bind_ssbo(ssbo_indirect_draw,   8);
-			check_gl("bind ssbos");
-			// CGP stores matrices row-major in memory, so transpose=GL_TRUE.
-			glUniformMatrix4fv(glGetUniformLocation(program_project, "view"),       1, GL_TRUE, ptr(environment.camera_view));
-			glUniformMatrix4fv(glGetUniformLocation(program_project, "projection"), 1, GL_TRUE, ptr(environment.camera_projection));
-			glUniform1f (glGetUniformLocation(program_project, "alpha_cutoff"), gui.alpha_cutoff);
-			glUniform1ui(glGetUniformLocation(program_project, "splat_count"), GLuint(n));
-			GLuint const depth_key_bits = GLuint(std::max(2, std::min(4, gui.depth_sort_passes)) * 8);
-			glUniform1ui(glGetUniformLocation(program_project, "depth_key_bits"), depth_key_bits);
-			check_gl("compute uniforms");
-
-			GLuint const groups = (GLuint(n) + 255u) / 256u;
-			glDispatchCompute(groups, 1u, 1u);                       check_gl("dispatchCompute");
-			glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_COMMAND_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
-			check_gl("memoryBarrier");
-			profiler.gpu_project.end();
-
-			// 2.5) Read back the visible count (instanceCount slot of the indirect cmd).
-			DrawElementsIndirectCommand_t cmd_back{};
-			glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_indirect_draw);
-			glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(cmd_back), &cmd_back);
-			glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-			profiler.visible_count = int(cmd_back.instanceCount);
-			profiler.splat_count   = n;
-
-			GLuint visible_count = cmd_back.instanceCount;
-			GLuint sorted_buffer = ssbo_visible_indices;
-			if (visible_count > 1u) {
-				profiler.gpu_sort.begin();
-				GLuint const block_count = (visible_count + radix_block_size - 1u) / radix_block_size;
-
-				// Copy the visible list into the ping-pong input buffer.
-				glBindBuffer(GL_COPY_READ_BUFFER, ssbo_visible_indices);
-				glBindBuffer(GL_COPY_WRITE_BUFFER, ssbo_sort_a);
-				glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0,
-					GLsizeiptr(visible_count) * GLsizeiptr(sizeof(GLuint)));
-				glBindBuffer(GL_COPY_READ_BUFFER, 0);
-				glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
-
-				GLuint sort_in = ssbo_sort_a;
-				GLuint sort_out = ssbo_sort_b;
-				GLuint const pass_count = GLuint(std::max(2, std::min(4, gui.depth_sort_passes)));
-				for (GLuint pass = 0; pass < pass_count; ++pass) {
-					GLuint const shift = pass * 8u;
-
-					// Clear block histograms.
-					GLuint const zero = 0u;
-					glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_radix_hist);
-					glClearBufferData(GL_SHADER_STORAGE_BUFFER, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, &zero);
-					glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-
-					// Histogram per block.
-					glUseProgram(program_radix_histogram);
-					bind_ssbo(sort_in, 9);
-					bind_ssbo(ssbo_view_data, 5);
-					bind_ssbo(ssbo_radix_hist, 11);
-					glUniform1ui(glGetUniformLocation(program_radix_histogram, "element_count"), visible_count);
-					glUniform1ui(glGetUniformLocation(program_radix_histogram, "pass_shift"), shift);
-					glUniform1ui(glGetUniformLocation(program_radix_histogram, "block_count"), block_count);
-					glDispatchCompute(block_count, 1u, 1u);
-					glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-
-					// Prefix over blocks (writes block prefixes + per-bin totals).
-					glUseProgram(program_radix_block_prefix);
-					bind_ssbo(ssbo_radix_hist, 11);
-					bind_ssbo(ssbo_radix_bins, 12);
-					glUniform1ui(glGetUniformLocation(program_radix_block_prefix, "block_count"), block_count);
-					glDispatchCompute(1u, 1u, 1u);
-					glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-
-					// Prefix over bins to get global base offsets.
-					glUseProgram(program_radix_bin_prefix);
-					bind_ssbo(ssbo_radix_bins, 12);
-					glDispatchCompute(1u, 1u, 1u);
-					glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-
-					// Scatter into the output buffer (stable within each block).
-					glUseProgram(program_radix_scatter);
-					bind_ssbo(sort_in, 9);
-					bind_ssbo(sort_out, 10);
-					bind_ssbo(ssbo_view_data, 5);
-					bind_ssbo(ssbo_radix_hist, 11);
-					bind_ssbo(ssbo_radix_bins, 12);
-					glUniform1ui(glGetUniformLocation(program_radix_scatter, "element_count"), visible_count);
-					glUniform1ui(glGetUniformLocation(program_radix_scatter, "pass_shift"), shift);
-					glUniform1ui(glGetUniformLocation(program_radix_scatter, "block_count"), block_count);
-					glDispatchCompute(block_count, 1u, 1u);
-					glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-
-					std::swap(sort_in, sort_out);
-				}
-
-				profiler.gpu_sort.end();
-				sorted_buffer = sort_in;
-			}
-
-			// 3) Indirect draw of the quad, instanceCount = visible count.
-			profiler.gpu_draw.begin();
-			glUseProgram(program_splat);                              check_gl("useProgram splat");
-			glUniform1f(glGetUniformLocation(program_splat, "alpha_cutoff"), gui.alpha_cutoff);
-			bind_ssbo(ssbo_view_data,       5);
-			bind_ssbo(sorted_buffer, 6);
-			check_gl("splat uniforms+ssbos");
-
-			glBindVertexArray(quad_vao);                              check_gl("bindVertexArray");
-			glBindBuffer(GL_DRAW_INDIRECT_BUFFER, ssbo_indirect_draw); check_gl("bind DRAW_INDIRECT");
-			glDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_INT, nullptr); check_gl("drawElementsIndirect");
-			glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
-			glBindVertexArray(0);
-			glUseProgram(0);
-			profiler.gpu_draw.end();
-			check_gl("end gpu draw");
-
-			check_gl("end gpu draw");
-		}
-		else {
-			// ---------------- Legacy CPU path ----------------
-			auto const t0 = std::chrono::high_resolution_clock::now();
-			sortPoints(splat_indices, splat_points, camera_control.camera_model.position());
-			auto const t1 = std::chrono::high_resolution_clock::now();
-			glBindBuffer(GL_ARRAY_BUFFER, vbo_indices);
-			glBufferSubData(GL_ARRAY_BUFFER, 0, GLsizeiptr(splat_indices.size()) * GLsizeiptr(sizeof(int)), ptr(splat_indices));
-			glBindBuffer(GL_ARRAY_BUFFER, 0);
-			auto const t2 = std::chrono::high_resolution_clock::now();
-
-			profiler.cpu_sort_ms   = std::chrono::duration<double, std::milli>(t1 - t0).count();
-			profiler.cpu_upload_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
-
-			profiler.gpu_draw.begin();
-			draw(quad1, environment, splat_indices.size());
-			profiler.gpu_draw.end();
-
-			profiler.visible_count = n;
-			profiler.splat_count   = n;
-		}
+	if (ssbo_visible_counter != 0) {
+		unsigned int zero = 0;
+		glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, ssbo_visible_counter);
+		glBufferSubData(GL_ATOMIC_COUNTER_BUFFER, 0, sizeof(unsigned int), &zero);
+		glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, 0);
 	}
 
-	// Resolve double-buffered GPU timer queries (fetch the previous frame's results).
-	profiler.resolve_all();
+	// If we have splats, run prepass -> sort -> draw.
+	if (splat_points.size() > 0){
+		unsigned int total_count = static_cast<unsigned int>(splat_points.size());
+
+		// Prepass starts from the full instance count.
+		glBindBuffer(GL_DRAW_INDIRECT_BUFFER, ssbo_indirect_draw);
+		glBufferSubData(GL_DRAW_INDIRECT_BUFFER, sizeof(unsigned int), sizeof(unsigned int), &total_count);
+		glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
+
+		// Prepass: write depth keys + visible indices into SSBOs.
+		environment.uniform_generic.uniform_int["prepass_only"] = 1;
+		glUseProgram(quad1.shader.id);
+
+		// Prepass writes to ping (binding 6).
+		bind_ssbo(ssbo_sort_ping, 6);
+		quad1.send_opengl_uniform(false);
+		environment.send_opengl_uniform(quad1.shader, false);
+
+		// Prepass must scan all splats, so bind the original index stream.
+		glBindVertexArray(quad1.vao);
+		glBindBuffer(GL_ARRAY_BUFFER, vbo_indices);
+		glVertexAttribIPointer(4, 1, GL_UNSIGNED_INT, 0, nullptr);
+		glVertexAttribDivisor(4, 1);
+		glEnableVertexAttribArray(4);
+
+		// Run vertex shader only (no fragments) for prepass.
+		glEnable(GL_RASTERIZER_DISCARD);
+		glDisable(GL_BLEND);
+		glDrawArraysInstanced(GL_POINTS, 0, 1, total_count);
+		glDisable(GL_RASTERIZER_DISCARD);
+		glEnable(GL_BLEND);
+		glBindVertexArray(0);
+		glUseProgram(0);
+		environment.uniform_generic.uniform_int["prepass_only"] = 0;
+
+		// Make prepass writes visible to compute.
+		glMemoryBarrier(GL_ATOMIC_COUNTER_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT);
+
+		// Copy visible count into the indirect draw command (GPU->GPU).
+		glBindBuffer(GL_COPY_READ_BUFFER, ssbo_visible_counter);
+		glBindBuffer(GL_COPY_WRITE_BUFFER, ssbo_indirect_draw);
+		glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, sizeof(unsigned int), sizeof(unsigned int));
+		glBindBuffer(GL_COPY_READ_BUFFER, 0);
+		glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
+		glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT | GL_COMMAND_BARRIER_BIT);
+
+		glUseProgram(compute_radix_program);
+
+		// Bind compute uniforms.
+		GLint loc_phase = glGetUniformLocation(compute_radix_program, "radix_phase");
+		GLint loc_shift = glGetUniformLocation(compute_radix_program, "shift");
+		GLint loc_block_count = glGetUniformLocation(compute_radix_program, "block_count");
+
+		// One 8-bit radix pass per byte of the depth key.
+		int passes = (gui.depth_bits + 7) / 8;
+		GLuint const radix_block_count = GLuint((size_t(total_count) + radix_block_size - 1u) / radix_block_size);
+		bool ping_input = true;
+		for (int pass = 0; pass < passes; ++pass) {
+			// Select the current radix digit.
+			int shift = pass * 8;
+			glUniform1i(loc_shift, shift);
+			glUniform1ui(loc_block_count, radix_block_count);
+
+			// Bind ping-pong buffers correctly.
+			if (ping_input) {
+				glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, ssbo_sort_ping);
+				glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, ssbo_sort_pong);
+			} else {
+				glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, ssbo_sort_pong);
+				glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, ssbo_sort_ping);
+			}
+
+			// Step 1: clear histogram/prefix.
+			glUniform1i(loc_phase, 0);
+			glDispatchCompute(radix_block_count, 1, 1);
+			glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+			// Step 2: build histogram.
+			glUniform1i(loc_phase, 1);
+			glDispatchCompute(radix_block_count, 1, 1);
+			glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+			// Step 3: prefix sums.
+			glUniform1i(loc_phase, 2);
+			glDispatchCompute(1, 1, 1);
+			glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+			// Step 4: scatter into output.
+			glUniform1i(loc_phase, 3);
+			glDispatchCompute(radix_block_count, 1, 1);
+			glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+			ping_input = !ping_input;
+		}
+
+		// Unbind compute resources.
+		glUseProgram(0);
+
+		// Bind sorted indices: SortPair is {key,index} -> attribute 4 reads index.
+		bool sorted_in_ping = ping_input;
+		GLuint sorted_buffer = sorted_in_ping ? ssbo_sort_ping : ssbo_sort_pong;
+		glBindVertexArray(quad1.vao);
+		glBindBuffer(GL_ARRAY_BUFFER, sorted_buffer);
+		glVertexAttribIPointer(4, 1, GL_UNSIGNED_INT, sizeof(unsigned int) * 2, reinterpret_cast<void*>(sizeof(unsigned int)));
+		glVertexAttribDivisor(4, 1);
+		glEnableVertexAttribArray(4);
+		glBindVertexArray(0);
+
+		// Final draw: uses visible count + sorted indices.
+		draw_mesh_indirect(quad1, environment, ssbo_indirect_draw);
+	}
 
 	glDepthMask(true);
 	glDisable(GL_BLEND);
@@ -535,31 +422,16 @@ void scene_structure::display_gui()
 {
 	ImGui::Checkbox("Frame", &gui.display_frame);
 	ImGui::SliderFloat("Alpha cutoff", &gui.alpha_cutoff, 1e-6f, 1.0f, "%.5f", ImGuiSliderFlags_Logarithmic);
-	ImGui::SliderFloat("Camera speed", &gui.camera_move_speed, 0.1f, 20.0f, "%.1f");
-	ImGui::Text("Move: R/F zoom, Z/W/S vertical, A/Q/Left, D/Right");
-
-	ImGui::Separator();
-	ImGui::Checkbox("GPU pipeline (Phase 1)", &use_gpu_pipeline);
-	char const* depth_pass_labels[] = { "4", "3", "2" };
-	int depth_pass_index = gui.depth_sort_passes == 4 ? 0 : (gui.depth_sort_passes == 3 ? 1 : 2);
-	if (ImGui::Combo("Depth sort passes", &depth_pass_index, depth_pass_labels, 3)) {
-		gui.depth_sort_passes = depth_pass_index == 0 ? 4 : (depth_pass_index == 1 ? 3 : 2);
+	const char* depth_labels[] = { "16", "24", "32" };
+	int depth_index = (gui.depth_bits == 16) ? 0 : (gui.depth_bits == 24) ? 1 : 2;
+	if (ImGui::Combo("Depth bits", &depth_index, depth_labels, 3)) {
+		gui.depth_bits = (depth_index == 0) ? 16 : (depth_index == 1) ? 24 : 32;
 	}
-	ImGui::Checkbox("Show profiler", &gui.show_profiler);
-
-	if (gui.show_profiler) {
-		ImGui::Text("Splats:    %d", profiler.splat_count);
-		ImGui::Text("Visible:   %d", profiler.visible_count);
-		ImGui::Separator();
-		if (use_gpu_pipeline) {
-			ImGui::Text("GPU project:  %.3f ms", profiler.gpu_project.last_ms);
-			ImGui::Text("GPU sort:     %.3f ms", profiler.gpu_sort.last_ms);
-			ImGui::Text("GPU draw:     %.3f ms", profiler.gpu_draw.last_ms);
-		} else {
-			ImGui::Text("CPU sort:     %.3f ms", profiler.cpu_sort_ms);
-			ImGui::Text("CPU upload:   %.3f ms", profiler.cpu_upload_ms);
-			ImGui::Text("GPU draw:     %.3f ms", profiler.gpu_draw.last_ms);
-		}
+	ImGui::Spacing();
+	if (ImGui::Button(animation_mode ? "Switch to manual camera" : "Switch to looping camera")) {
+		animation_mode = !animation_mode;
+		if (animation_mode)
+			animation_time = 0.0f;
 	}
 }
 
@@ -580,42 +452,29 @@ void scene_structure::keyboard_event()
 {
 	camera_control.action_keyboard();
 }
-void scene_structure::apply_keyboard_camera_navigation()
-{
-	if (ImGui::GetIO().WantCaptureKeyboard)
-		return;
-
-	float const magnitude = gui.camera_move_speed * inputs.time_interval;
-	auto const key_down = [this](int key) {
-		return glfwGetKey(window.glfw_window, key) == GLFW_PRESS;
-	};
-
-	bool const shift_down = key_down(GLFW_KEY_LEFT_SHIFT) || key_down(GLFW_KEY_RIGHT_SHIFT);
-	bool const zoom_in = (!shift_down && key_down(GLFW_KEY_R)) || key_down(GLFW_KEY_UP);
-	bool const zoom_out = (!shift_down && key_down(GLFW_KEY_F)) || key_down(GLFW_KEY_DOWN);
-	bool const move_up = key_down(GLFW_KEY_Z) || key_down(GLFW_KEY_W);
-	bool const move_down = key_down(GLFW_KEY_S);
-	bool const move_left = key_down(GLFW_KEY_A) || key_down(GLFW_KEY_Q) || (!shift_down && key_down(GLFW_KEY_LEFT));
-	bool const move_right = key_down(GLFW_KEY_D) || (!shift_down && key_down(GLFW_KEY_RIGHT));
-
-	if (zoom_in)
-		camera_control.camera_model.manipulator_translate_front(-magnitude);
-	if (zoom_out)
-		camera_control.camera_model.manipulator_translate_front(magnitude);
-	if (move_up)
-		camera_control.camera_model.manipulator_translate_in_plane({ 0.0f, -magnitude });
-	if (move_down)
-		camera_control.camera_model.manipulator_translate_in_plane({ 0.0f, magnitude });
-	if (move_left)
-		camera_control.camera_model.manipulator_translate_in_plane({ magnitude, 0.0f });
-	if (move_right)
-		camera_control.camera_model.manipulator_translate_in_plane({ -magnitude, 0.0f });
-}
 void scene_structure::idle_frame()
 {
+	if (animation_mode)
+		update_camera_animation(inputs.time_interval);
 	camera_control.idle_frame();
-	apply_keyboard_camera_navigation();
 	
+}
+
+void scene_structure::update_camera_animation(float dt)
+{
+	animation_time += dt;
+	float const t = std::fmod(animation_time, animation_period);
+	float const phase = 2 * Pi * t / animation_period;
+	float const faster_phase = phase * 2.0f; // faster oscillation for pitch
+
+	camera_control.camera_model.set_rotation_axis({0.0f, 1.0f, 0.0f});
+	camera_control.camera_model.center_of_rotation = animation_center;
+	camera_control.camera_model.yaw = phase; // Rotate around the green (Y) axis
+	camera_control.camera_model.pitch = animation_pitch_amplitude * (1.3+std::sin(faster_phase)); // Up/down tilt
+	camera_control.camera_model.roll = Pi;
+
+	float const zoom = 0.30f - animation_zoom_amplitude * (0.5f - 0.5f * std::cos(phase)); // Zoom in and out smoothly
+	camera_control.camera_model.distance_to_center = animation_base_distance * zoom;
 }
 
 void scene_structure::display_info()
@@ -623,8 +482,6 @@ void scene_structure::display_info()
 	std::cout << "\nCAMERA CONTROL:" << std::endl;
 	std::cout << "-----------------------------------------------" << std::endl;
 	std::cout << camera_control.doc_usage() << std::endl;
-	std::cout << "  Keyboard navigation: R/Up zoom in, F/Down zoom out, Z/W up, S down, A/Q/Left left, D/Right right." << std::endl;
-	std::cout << "  Use the GUI Camera speed slider to adjust movement speed." << std::endl;
 	std::cout << "-----------------------------------------------\n" << std::endl;
 
 

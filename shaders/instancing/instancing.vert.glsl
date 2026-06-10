@@ -10,35 +10,57 @@ layout(std430, binding = 1) readonly buffer SplatColors      { vec4  data[]; } s
 // 2 vec4 per splat: (Sxx, Syy, Szz, Sxy) then (Sxz, Syz, _, _)
 layout(std430, binding = 2) readonly buffer SplatCovariances { vec4  data[]; } splat_covariances;
 layout(std430, binding = 3) readonly buffer SplatOpacities   { float data[]; } splat_opacities;
+layout(std430, binding = 4) writeonly buffer SplatDepthKeys  { uint  data[]; } splat_depth_keys;
+
+struct SortPair {
+	uint key;
+	uint index;
+};
+layout(std430, binding = 6) writeonly buffer SortPairs { SortPair data[]; } sort_pairs;
+
+layout(binding = 5, offset = 0) uniform atomic_uint visible_count;
 
 
 uniform mat4 model;
 uniform mat4 view;
 uniform mat4 projection;
+uniform float alpha_cutoff;
+uniform int depth_bits;
+uniform int prepass_only;
 
 flat out vec3 frag_color;
 flat out float frag_opacity;
 out vec2 uv;
 
+uint depth_to_key(float d)
+{
+	uint u = floatBitsToUint(d);
+	uint mask = (u & 0x80000000u) != 0u ? 0xFFFFFFFFu : 0x80000000u;
+	return u ^ mask;
+}
 
 void main()
 {
-	int i = int(instance_idx);
+	int i = prepass_only != 0 ? gl_InstanceID : int(instance_idx);
 	vec3  instance_position = splat_points.data[i].xyz;
 	vec3  instance_color = splat_colors.data[i].xyz;
 	vec4  cov_a = splat_covariances.data[2*i + 0]; // (Sxx, Syy, Szz, Sxy)
 	vec4  cov_b = splat_covariances.data[2*i + 1]; // (Sxz, Syz, _, _)
 	float instance_opacity  = splat_opacities.data[i];
 
-
 	frag_color = instance_color;
 	frag_opacity = instance_opacity;
-
 
 	// center in world
 	mat4 MV = view * model;
 	vec4 view_center =  MV * vec4(instance_position, 1.0);
 
+	// Early reject splats behind the near plane to avoid unstable projection.
+	if (view_center.z >= -1e-4) {
+		frag_opacity = 0.0;
+		gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+		return;
+	}
 
 	// Reconstruct the symmetric 3D covariance from its 6 unique entries
 	mat3 sigma3D = mat3(
@@ -62,20 +84,69 @@ void main()
 	float a = sigma2D[0][0]; float b = sigma2D[1][1]; float c = sigma2D[0][1];
 	float det = a*b-c*c; 
 	float tr = a+b;
-	float discr = tr*tr-4*det;
+	float discr = max(tr*tr-4*det, 0.0);
 	float lambda1 = (tr + sqrt(discr))/2.0; 
 	float lambda2 = (tr - sqrt(discr))/2.0; 
+
+	// Early reject ill-conditioned splats
+	if (lambda1 <= 1e-12 || lambda2 <= 1e-12) {
+		frag_opacity = 0.0;
+		gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+		return;
+	}
 
 	vec2 dir1 = vec2((lambda1-b), c); dir1 = normalize(dir1);
 	vec2 dir2 = vec2(-dir1.y, dir1.x); 
 	
-	float spread = 2.0;
-	vec2 delta = spread*(sqrt(lambda1)*vertex_position.x * dir1 + sqrt(lambda2)*vertex_position.y * dir2);
+	// Early reject splats that are too transparent 
+	if (instance_opacity <= 1e-8) {
+		frag_opacity = 0.0;
+		gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+		return;
+	}
+
+	// Compute spread based on alpha_cutoff
+	float ratio = max(alpha_cutoff, 1e-6) / max(instance_opacity, 1e-8);
+	float spread = (ratio < 1.0) ? sqrt(-2.0 * log(ratio)) : 0.0;
+	if (spread <= 0.0) {
+		frag_opacity = 0.0;
+		gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+		return;
+	}
+	spread = min(spread, 100.0); // clamp spread to avoid numerical issues with very small alpha_cutoff
+	vec2 axis1_ndc = spread * sqrt(lambda1) * dir1;
+	vec2 axis2_ndc = spread * sqrt(lambda2) * dir2;
+
+	vec4 clip_center = projection * view_center;
+	vec2 ndc_center = clip_center.xy / clip_center.w;
+	float rx = abs(axis1_ndc.x) + abs(axis2_ndc.x);
+	float ry = abs(axis1_ndc.y) + abs(axis2_ndc.y);
+
+	// If out of the NDC bounds / screen, early reject the splat
+	if (ndc_center.x + rx < -1.0 || ndc_center.x - rx > 1.0 ||
+		ndc_center.y + ry < -1.0 || ndc_center.y - ry > 1.0) {
+		frag_opacity = 0.0;
+		gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+		return;
+	}
+
+	if (prepass_only != 0) {
+		uint slot = atomicCounterIncrement(visible_count);
+		uint key = depth_to_key(-view_center.z);
+		if (depth_bits < 32) {
+			key >>= (32u - uint(depth_bits));
+		}
+		sort_pairs.data[slot].key = ~key; // radix ascending => far-to-near draw order
+		sort_pairs.data[slot].index = uint(i);
+		gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+		return;
+	}
+
+	vec2 delta = axis1_ndc * vertex_position.x + axis2_ndc * vertex_position.y;
 	
-	uv = vertex_position.xy *spread;
+	uv = vertex_position.xy * spread;
 
-	vec4 screen_position = projection * view_center;
-
+	vec4 screen_position = clip_center;
 	screen_position.xy += delta * screen_position.w;
 
 	gl_Position = screen_position;

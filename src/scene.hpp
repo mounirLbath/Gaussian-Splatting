@@ -12,44 +12,7 @@ using cgp::mesh_drawable;
 struct gui_parameters {
 	bool display_frame = false;
 	float alpha_cutoff = 0.004f;
-	float camera_move_speed = 3.0f;
-	int depth_sort_passes = 4;
-	bool show_profiler = true;
-};
-
-
-// Simple double-buffered GPU timer: glBeginQuery/glEndQuery on GL_TIME_ELAPSED.
-// We ping-pong buffers so reads are non-stalling: write to frame N, read from frame N-1.
-struct gpu_timer_scope {
-	GLuint queries[2] = {0, 0};
-	int    write_index = 0;
-	bool   has_pending = false;
-	double last_ms = 0.0; // last completed measurement in milliseconds
-
-	void initialize();
-	void destroy();
-	void begin();
-	void end();
-	void resolve(); // call once per frame after all begin/end pairs to fetch ready results
-};
-
-struct frame_profiler {
-	// CPU-side timings (milliseconds)
-	double cpu_sort_ms = 0.0;
-	double cpu_upload_ms = 0.0;
-
-	// GPU-side timings (milliseconds, from previous frame to avoid stalls)
-	gpu_timer_scope gpu_project;
-	gpu_timer_scope gpu_sort;
-	gpu_timer_scope gpu_draw;
-
-	// Counters
-	int splat_count = 0;
-	int visible_count = 0;
-
-	void initialize();
-	void destroy();
-	void resolve_all();
+	int depth_bits = 32;
 };
 
 
@@ -91,6 +54,15 @@ struct scene_structure : cgp::scene_inputs_generic {
 	// The model of camera projection (intrinsic parameters)
 	camera_projection_perspective camera_projection;
 
+	// Camera animation state
+	bool animation_mode = false;
+	float animation_time = 0.0f;
+	float animation_period = 20.0f;
+	float animation_pitch_amplitude = 0.25f;
+	float animation_zoom_amplitude = 0.2f;
+	float animation_base_distance = 7.5f;
+	vec3 animation_center = {0.0f, -0.15f, 0.0f};
+
 	
 	
 	// ****************************** //
@@ -113,53 +85,17 @@ struct scene_structure : cgp::scene_inputs_generic {
 	GLuint ssbo_colors = 0;
 	GLuint ssbo_covariances = 0;
 	GLuint ssbo_opacities = 0;
+	GLuint ssbo_depth_keys = 0;
+	GLuint ssbo_visible_counter = 0;
+	GLuint ssbo_sort_ping = 0;
+	GLuint ssbo_sort_pong = 0;
+	GLuint ssbo_radix_hist = 0;
+	GLuint ssbo_radix_prefix = 0;
+	GLuint ssbo_indirect_draw = 0;
+	GLuint compute_radix_program = 0;
 
 	GLuint vbo_indices = 0;
 	cgp::numarray<int> splat_indices;
-
-
-	// Phase 1: GPU projection + visibility + indirect draw
-	// ------------------------------------------------------------------ //
-	// Per-splat record produced each frame by the projection compute shader.
-	// Layout (must match shaders/instancing/project.comp.glsl):
-	//   vec4 center_axis1;   // xy = NDC center, zw = ellipse axis 1 in NDC
-	//   vec4 axis2_aabb;     // xy = ellipse axis 2 in NDC, zw = pixel-space AABB radius (rx, ry)
-	//   vec4 color_opacity;  // rgb = color, a = opacity
-	//   uint depth_key;      // float-flipped 32-bit sortable depth (back-to-front: larger key = farther)
-	//   float view_depth;    // raw view-space -z (>0 in front of camera)
-	//   uint visible;        // 0 or 1
-	//   uint pad;
-	GLuint ssbo_view_data = 0;        // 64 bytes per splat (3 vec4 + 1 uvec4)
-	GLuint ssbo_visible_indices = 0;  // uint[] of visible splat indices, populated each frame
-	GLuint ssbo_indirect_draw = 0;    // single DrawElementsIndirectCommand; instanceCount also acts as the atomic visible counter
-
-	// GPU programs
-	GLuint program_project = 0;       // compute shader
-	GLuint program_splat = 0;         // graphics program (vert + frag) for the thin instancing path
-	GLuint program_radix_histogram = 0;
-	GLuint program_radix_block_prefix = 0;
-	GLuint program_radix_bin_prefix = 0;
-	GLuint program_radix_scatter = 0;
-
-	// Phase 2: GPU radix sort buffers
-	GLuint ssbo_sort_a = 0;           // ping-pong buffer A for visible indices
-	GLuint ssbo_sort_b = 0;           // ping-pong buffer B for visible indices
-	GLuint ssbo_radix_hist = 0;       // block histograms / block prefixes (block_count * 256)
-	GLuint ssbo_radix_bins = 0;       // per-bin totals / base offsets (256)
-	GLuint radix_block_count_max = 0; // max block count for allocation
-	static constexpr GLuint radix_block_size = 1024u; // 256 threads * 4 items
-
-	// Quad geometry for the splat draw (replaces the cgp mesh_drawable path)
-	GLuint quad_vao = 0;
-	GLuint quad_vbo = 0;
-	GLuint quad_ebo = 0;
-
-	// Toggles. Default OFF until Phase 2 lands the GPU sort -- the GPU path currently
-	// draws splats in atomic-append order so blending is wrong on heavy alpha overlap.
-	bool use_gpu_pipeline = true;    // true = GPU sort + indirect draw path
-
-	// Profiler
-	frame_profiler profiler;
 
 
 	// ****************************** //
@@ -169,7 +105,7 @@ struct scene_structure : cgp::scene_inputs_generic {
 	void mouse_click_event();
 	void keyboard_event();
 	void idle_frame();
-	void apply_keyboard_camera_navigation();
+	void update_camera_animation(float dt);
 
 };
 

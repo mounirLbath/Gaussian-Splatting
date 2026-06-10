@@ -34,12 +34,3 @@ void compute_covariances_from_scales_and_rotations(
     cgp::numarray<cgp::vec4> const& rotations,
     cgp::numarray<cgp::vec4>& out_covariances
 );
-
-
-// Load and link an OpenGL compute shader from a single .comp.glsl file.
-// Returns the linked program id, or 0 on failure (and prints the log to stderr).
-GLuint load_compute_program(std::string const& path);
-
-// Load and link a vert+frag program directly (no cgp drawable wiring).
-// Returns the program id, or 0 on failure.
-GLuint load_graphics_program(std::string const& vert_path, std::string const& frag_path);
