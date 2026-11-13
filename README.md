@@ -14,19 +14,25 @@ Each Gaussian is drawn as one quad (with instancing), and the [vertex shader](sh
 
 **Projection.** We move the 3D covariance $\Sigma$ to camera space with the view matrix $V$, then project it in 2D. The perspective projection is not linear, so we linearize it around the center $(x, y, z)$ of the Gaussian with its Jacobian:
 
-$$J = \begin{pmatrix} -f_x/z & 0 & f_x\,x/z^2 \\ 0 & -f_y/z & f_y\,y/z^2 \end{pmatrix}, \qquad \Sigma' = J V \Sigma V^\top J^\top$$
+```math
+J = \begin{pmatrix} -f_x/z & 0 & f_x x/z^2 \\ 0 & -f_y/z & f_y y/z^2 \end{pmatrix}, \qquad \Sigma' = J V \Sigma V^\top J^\top
+```
 
 $\Sigma'$ is a $2 \times 2$ covariance, so on screen the Gaussian is an ellipse.
 
-**Quad.** We align the quad with the eigenvectors of $\Sigma' = \begin{pmatrix} a & c \\ c & b \end{pmatrix}$, computed in closed form:
+**Quad.** We align the quad with the eigenvectors of $\Sigma'$, computed in closed form:
 
-$$\lambda_{1,2} = \frac{(a+b) \pm \sqrt{(a+b)^2 - 4(ab - c^2)}}{2}, \qquad e_1 \propto (\lambda_1 - b,\; c), \qquad e_2 \perp e_1$$
+```math
+\Sigma' = \begin{pmatrix} a & c \\ c & b \end{pmatrix}, \qquad \lambda_{1,2} = \frac{(a+b) \pm \sqrt{(a+b)^2 - 4(ab - c^2)}}{2}, \qquad e_1 \propto (\lambda_1 - b, c), \qquad e_2 \perp e_1
+```
 
 It only covers a spread $s$ along those axes, up to where the opacity $\alpha$ drops below a cutoff:
 
-$$\alpha\, e^{-s^2/2} = \alpha_{\text{cut}} \;\Rightarrow\; s = \sqrt{2 \ln(\alpha / \alpha_{\text{cut}})}$$
+```math
+\alpha e^{-s^2/2} = \alpha_{\text{cut}} \quad \Rightarrow \quad s = \sqrt{2 \ln(\alpha / \alpha_{\text{cut}})}
+```
 
-So a corner $(u, v) \in \{-1, 1\}^2$ of the quad lands at $\text{center} + s\,(u \sqrt{\lambda_1}\, e_1 + v \sqrt{\lambda_2}\, e_2)$.
+So a corner $`(u, v) \in \{-1, 1\}^2`$ of the quad lands at $`\text{center} + s (u \sqrt{\lambda_1} e_1 + v \sqrt{\lambda_2} e_2)`$.
 
 **Color.** The [fragment shader](shaders/instancing/instancing.frag.glsl) gives each pixel the color of the Gaussian, with an opacity that decays like the Gaussian, and the quads are blended back to front:
 
@@ -48,7 +54,9 @@ On the [`stable-physics`](../../tree/stable-physics) branch, the splats become r
 
 **Moving the splats.** Each frame, Bullet gives a rotation $R$ and a translation $T$ per object, and we apply them to every Gaussian of the object:
 
-$$\mu \mapsto R\mu + T, \qquad \Sigma \mapsto R\,\Sigma\,R^\top$$
+```math
+\mu \mapsto R\mu + T, \qquad \Sigma \mapsto R \Sigma R^\top
+```
 
 The rest of the renderer is unchanged: it just sees new centers and covariances.
 
